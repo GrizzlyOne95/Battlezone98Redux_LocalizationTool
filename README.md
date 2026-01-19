@@ -46,7 +46,7 @@ If you want to run the script directly, you need [Python 3.x](https://www.python
     ```
 2.  **Run the script**:
     ```bash
-    python bz98_app.py
+    python localization.py
     ```
 
 ---
