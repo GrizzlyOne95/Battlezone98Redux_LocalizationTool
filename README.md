@@ -14,6 +14,9 @@ A specialized tool for **Battlezone 98 Redux** modders to quickly translate and 
 * **Quick Jump**: One-click buttons to find the default Steam or GOG installation directories.
 * **Multi-Language Support**: Automatically translates into French, German, Spanish, Italian, Russian, and Portuguese using Google Translate.
 
+  <img width="802" height="932" alt="image" src="https://github.com/user-attachments/assets/a9438abf-c575-4899-a53b-68941e0f4fe4" />
+
+
 ---
 
 ## Security & Internet Usage
