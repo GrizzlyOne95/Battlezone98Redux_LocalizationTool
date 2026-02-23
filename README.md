@@ -2,6 +2,8 @@
 
 A premium, automated localization tool for **Battlezone 98 Redux** modders. Quickly translate bulk English text or scan your custom ODF folders to automatically collect and translate unit names into the game's `localization_table.csv`.
 
+<img width="902" height="982" alt="image" src="https://github.com/user-attachments/assets/a97ed2b9-e43f-4524-94cf-8a669c7dc2cb" />
+
 ---
 
 ## 🎨 New Premium Aesthetics
