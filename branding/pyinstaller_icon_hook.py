@@ -1,4 +1,4 @@
-"""Apply the packaged Battlezone tool icon to Windows Tk windows."""
+"""Apply the packaged Battlezone tool icon to Tk windows and the Windows taskbar."""
 import os
 import sys
 
@@ -11,22 +11,27 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-    try:
-        import tkinter as tk
+try:
+    import tkinter as tk
 
-        icon_path = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "bzlocal.ico")
-        if os.path.exists(icon_path):
-            def _wrap_init(cls):
-                original = cls.__init__
-                def wrapped(self, *args, **kwargs):
-                    original(self, *args, **kwargs)
-                    try:
-                        self.iconbitmap(icon_path)
-                    except Exception:
-                        pass
-                cls.__init__ = wrapped
+    base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    icon_path = os.path.join(base_path, "branding", "app_icon.png")
+    if os.path.exists(icon_path):
+        def _wrap_init(cls):
+            original = cls.__init__
 
-            _wrap_init(tk.Tk)
-            _wrap_init(tk.Toplevel)
-    except Exception:
-        pass
+            def wrapped(self, *args, **kwargs):
+                original(self, *args, **kwargs)
+                try:
+                    image = tk.PhotoImage(file=icon_path)
+                    self.iconphoto(True, image)
+                    self._battlezone_app_icon = image
+                except Exception:
+                    pass
+
+            cls.__init__ = wrapped
+
+        _wrap_init(tk.Tk)
+        _wrap_init(tk.Toplevel)
+except Exception:
+    pass
