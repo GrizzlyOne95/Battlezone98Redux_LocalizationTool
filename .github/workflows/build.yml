@@ -42,7 +42,7 @@ jobs:
       - name: Build with PyInstaller (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          pyinstaller --onefile --noconsole --name BZ98_Localization_Tool --icon bzlocal.ico --add-data "BZONE.ttf;." localization.py
+          pyinstaller --onefile --noconsole --name BZ98_Localization_Tool --icon bzlocal.ico --add-data "BZONE.ttf;." --add-data "bzlocal.ico;." --runtime-hook branding/pyinstaller_icon_hook.py localization.py
 
       - name: Build with PyInstaller (Non-Windows)
         if: matrix.os != 'windows-latest'
