@@ -107,16 +107,32 @@ jobs:
         with:
           path: artifacts
 
-      - name: Prepare Assets
+      - name: Prepare versioned release archives
+        shell: bash
         run: |
-          mkdir release_assets
-          cp artifacts/windows-latest-artifact/BZLocalizationTool.exe release_assets/BZLocalizationTool.exe || true
-          cp artifacts/ubuntu-latest-artifact/BZLocalizationTool release_assets/BZLocalizationTool_Linux || true
-          cp artifacts/macos-latest-artifact/BZLocalizationTool release_assets/BZLocalizationTool_macOS || true
+          set -euo pipefail
+          mkdir -p release_assets/windows release_assets/linux release_assets/macos
+
+          cp artifacts/windows-latest-artifact/BZLocalizationTool.exe release_assets/windows/BZLocalizationTool.exe
+          cp artifacts/ubuntu-latest-artifact/BZLocalizationTool release_assets/linux/BZLocalizationTool
+          cp artifacts/macos-latest-artifact/BZLocalizationTool release_assets/macos/BZLocalizationTool
+
+          chmod +x release_assets/linux/BZLocalizationTool release_assets/macos/BZLocalizationTool
+
+          (cd release_assets/windows && zip -q ../Battlezone98Redux_LocalizationTool-${GITHUB_REF_NAME}-windows.zip BZLocalizationTool.exe)
+          (cd release_assets/linux && tar -czf ../Battlezone98Redux_LocalizationTool-${GITHUB_REF_NAME}-linux.tar.gz BZLocalizationTool)
+          (cd release_assets/macos && tar -czf ../Battlezone98Redux_LocalizationTool-${GITHUB_REF_NAME}-macos.tar.gz BZLocalizationTool)
+
+          ls -lh release_assets/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: release_assets/*
+          files: |
+            release_assets/Battlezone98Redux_LocalizationTool-v*-windows.zip
+            release_assets/Battlezone98Redux_LocalizationTool-v*-linux.tar.gz
+            release_assets/Battlezone98Redux_LocalizationTool-v*-macos.tar.gz
+          fail_on_unmatched_files: true
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
