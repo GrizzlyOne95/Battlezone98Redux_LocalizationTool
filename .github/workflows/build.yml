@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
@@ -53,7 +54,44 @@ jobs:
         run: |
           pyinstaller --onefile --noconsole --name BZLocalizationTool --icon branding/app_icon.ico --add-data "BZONE.ttf:." --add-data "branding/app_icon.ico:branding" --add-data "branding/app_icon.png:branding" localization.py
 
-      - name: Upload Artifact
+      # SignPath Foundation signing is intentionally limited to tagged releases.
+      # Until SIGNPATH_ENABLED is set to true, Windows builds continue to publish unsigned.
+      - name: Upload unsigned Windows artifact for SignPath
+        id: upload-unsigned-windows
+        if: matrix.os == 'windows-latest' && vars.SIGNPATH_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-latest-unsigned
+          path: dist/BZLocalizationTool.exe
+
+      - name: Submit Windows release to SignPath
+        if: matrix.os == 'windows-latest' && vars.SIGNPATH_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v')
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '${{ vars.SIGNPATH_ORGANIZATION_ID }}'
+          project-slug: '${{ vars.SIGNPATH_PROJECT_SLUG }}'
+          signing-policy-slug: '${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}'
+          github-artifact-id: '${{ steps.upload-unsigned-windows.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Upload signed Windows artifact
+        if: matrix.os == 'windows-latest' && vars.SIGNPATH_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-latest-artifact
+          path: signed/BZLocalizationTool.exe
+
+      - name: Upload unsigned Windows artifact
+        if: matrix.os == 'windows-latest' && !(vars.SIGNPATH_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v'))
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-latest-artifact
+          path: dist/BZLocalizationTool.exe
+
+      - name: Upload non-Windows artifact
+        if: matrix.os != 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.os }}-artifact
