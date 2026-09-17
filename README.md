@@ -1,4 +1,4 @@
-# BZ98 Localization Tool & ODF Scanner
+# Battlezone Localization Tool
 
 A premium, automated localization tool for **Battlezone 98 Redux** modders. Quickly translate bulk English text or scan your custom ODF folders to automatically collect and translate unit names into the game's `localization_table.csv`.
 
@@ -32,7 +32,27 @@ The tool has been overhauled to match the **Battlezone Workshop Uploader** style
 ## 🛠 Getting Started
 
 ### Option 1: Running the Executable
-Download the latest version from the [Releases](https://github.com/GrizzlyOne95/Battlezone98Redux_LocalizationTool/releases) page for Windows, Linux, or macOS.
+Download the latest platform archive from the [Releases](https://github.com/GrizzlyOne95/Battlezone98Redux_LocalizationTool/releases) page.
+
+The executable name is intentionally stable and versionless:
+
+- Windows: `BZLocalizationTool.exe`
+- Linux/macOS: `BZLocalizationTool`
+
+Release archives carry the version, for example `Battlezone98Redux_LocalizationTool-v2.1-windows.zip`.
+
+### Windows application metadata
+
+Official Windows builds use the shared **Battlezone Modding Tools** product identity:
+
+```text
+FileDescription: Battlezone Localization Tool
+ProductName: Battlezone Modding Tools
+CompanyName: GrizzlyOne95
+OriginalFilename: BZLocalizationTool.exe
+```
+
+`FileVersion` and `ProductVersion` are derived from the release tag.
 
 ### Option 2: Running from Source
 1. **Clone the repo**:

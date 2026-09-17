@@ -6,15 +6,17 @@ The repository is prepared for SignPath Foundation Authenticode signing, but sig
 
 Use the following application identity when creating the SignPath project:
 
-- Project / product name: `Battlezone Localization Tool`
+- Project / application name: `Battlezone Localization Tool`
 - Windows executable: `BZLocalizationTool.exe`
+- Windows `ProductName`: `Battlezone Modding Tools`
+- Windows `FileDescription`: `Battlezone Localization Tool`
 - Source repository: `https://github.com/GrizzlyOne95/Battlezone98Redux_LocalizationTool`
 - Trusted build system: GitHub.com
 - Signing policy: release signing with manual approval
 
 Install the SignPath GitHub App for this repository and link the SignPath project to the GitHub.com trusted build system so origin verification can validate GitHub Actions builds.
 
-The GitHub Actions artifact submitted to SignPath is a ZIP produced by `actions/upload-artifact`; configure the SignPath artifact configuration to locate and Authenticode-sign `BZLocalizationTool.exe` inside that artifact. Enforce Windows file metadata for the product name `Battlezone Localization Tool` and a consistent product/file version.
+The GitHub Actions artifact submitted to SignPath is a ZIP produced by `actions/upload-artifact`; configure the SignPath artifact configuration to locate and Authenticode-sign `BZLocalizationTool.exe` inside that artifact. Enforce the shared suite product name `Battlezone Modding Tools`, the app-specific file description `Battlezone Localization Tool`, and a consistent product/file version.
 
 ## GitHub repository configuration
 
@@ -40,8 +42,9 @@ For a version tag such as `v2.2`, the workflow will:
 3. Upload the unsigned executable as a GitHub Actions artifact.
 4. Submit that artifact to SignPath using the official GitHub action.
 5. Wait for the required signing approval and completion.
-6. Upload the signed `BZLocalizationTool.exe` as the Windows release artifact.
-7. Publish the GitHub Release only after the build/signing job succeeds.
+6. Upload the signed `BZLocalizationTool.exe` as the Windows build artifact.
+7. Package the signed Windows executable into `Battlezone98Redux_LocalizationTool-v2.2-windows.zip` and package the stable `BZLocalizationTool` binary into equivalent Linux/macOS archives.
+8. Publish the GitHub Release only after the build/signing job succeeds.
 
 Manual `workflow_dispatch` builds remain unsigned; SignPath signing is intentionally restricted to version-tagged releases.
 
