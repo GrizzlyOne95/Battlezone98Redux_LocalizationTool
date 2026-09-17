@@ -62,5 +62,25 @@ Paste English names line-by-line.
 
 ---
 
+## Code signing policy
+
+Free code signing is provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+### Team roles
+
+* **Author / committer:** [GrizzlyOne95](https://github.com/GrizzlyOne95)
+* **Reviewer:** GrizzlyOne95 reviews changes submitted by external contributors before merge.
+* **Approver:** GrizzlyOne95 approves official release signing requests.
+
+### Privacy
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
+When the user explicitly requests a translation, the text selected for translation is sent to Google Translate through the open-source `deep-translator` dependency. Google's privacy policy is available at https://policies.google.com/privacy. This project does not intentionally collect application telemetry.
+
+Official Windows release binaries are built from this repository using GitHub Actions. Once SignPath Foundation signing is enabled for the project, version-tagged Windows releases are submitted from the GitHub-hosted build pipeline to SignPath for Authenticode signing and require release approval before publication.
+
+---
+
 ## 📜 Credits
 Built for the Battlezone 98 Redux modding community. Features inspired by the Workshop Uploader aesthetics.
