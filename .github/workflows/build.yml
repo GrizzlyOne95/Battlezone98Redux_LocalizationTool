@@ -18,11 +18,11 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest]
         include:
           - os: windows-latest
-            artifact_name: BZ98_Localization_Tool.exe
+            artifact_name: BZLocalizationTool.exe
           - os: ubuntu-latest
-            artifact_name: BZ98_Localization_Tool
+            artifact_name: BZLocalizationTool
           - os: macos-latest
-            artifact_name: BZ98_Localization_Tool
+            artifact_name: BZLocalizationTool
 
     steps:
       - name: Checkout code
@@ -39,15 +39,19 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller pillow
 
+      - name: Generate Windows version metadata
+        if: matrix.os == 'windows-latest'
+        run: python branding/make_windows_version_info.py
+
       - name: Build with PyInstaller (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          pyinstaller --onefile --noconsole --name BZ98_Localization_Tool --icon branding/app_icon.ico --add-data "BZONE.ttf;." --add-data "branding/app_icon.ico;branding" --add-data "branding/app_icon.png;branding" --runtime-hook branding/pyinstaller_icon_hook.py localization.py
+          pyinstaller --onefile --noconsole --name BZLocalizationTool --icon branding/app_icon.ico --version-file branding/windows_version_info.txt --add-data "BZONE.ttf;." --add-data "branding/app_icon.ico;branding" --add-data "branding/app_icon.png;branding" --runtime-hook branding/pyinstaller_icon_hook.py localization.py
 
       - name: Build with PyInstaller (Non-Windows)
         if: matrix.os != 'windows-latest'
         run: |
-          pyinstaller --onefile --noconsole --name BZ98_Localization_Tool --icon branding/app_icon.ico --add-data "BZONE.ttf:." --add-data "branding/app_icon.ico:branding" --add-data "branding/app_icon.png:branding" localization.py
+          pyinstaller --onefile --noconsole --name BZLocalizationTool --icon branding/app_icon.ico --add-data "BZONE.ttf:." --add-data "branding/app_icon.ico:branding" --add-data "branding/app_icon.png:branding" localization.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -68,9 +72,9 @@ jobs:
       - name: Prepare Assets
         run: |
           mkdir release_assets
-          cp artifacts/windows-latest-artifact/BZ98_Localization_Tool.exe release_assets/BZ98_Localization_Tool_Windows.exe || true
-          cp artifacts/ubuntu-latest-artifact/BZ98_Localization_Tool release_assets/BZ98_Localization_Tool_Linux || true
-          cp artifacts/macos-latest-artifact/BZ98_Localization_Tool release_assets/BZ98_Localization_Tool_macOS || true
+          cp artifacts/windows-latest-artifact/BZLocalizationTool.exe release_assets/BZLocalizationTool_Windows.exe || true
+          cp artifacts/ubuntu-latest-artifact/BZLocalizationTool release_assets/BZLocalizationTool_Linux || true
+          cp artifacts/macos-latest-artifact/BZLocalizationTool release_assets/BZLocalizationTool_macOS || true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
