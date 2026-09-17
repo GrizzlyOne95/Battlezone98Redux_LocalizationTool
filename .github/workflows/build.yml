@@ -72,7 +72,7 @@ jobs:
       - name: Prepare Assets
         run: |
           mkdir release_assets
-          cp artifacts/windows-latest-artifact/BZLocalizationTool.exe release_assets/BZLocalizationTool_Windows.exe || true
+          cp artifacts/windows-latest-artifact/BZLocalizationTool.exe release_assets/BZLocalizationTool.exe || true
           cp artifacts/ubuntu-latest-artifact/BZLocalizationTool release_assets/BZLocalizationTool_Linux || true
           cp artifacts/macos-latest-artifact/BZLocalizationTool release_assets/BZLocalizationTool_macOS || true
 
