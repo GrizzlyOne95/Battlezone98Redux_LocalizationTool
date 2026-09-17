@@ -47,6 +47,8 @@ Manual `workflow_dispatch` builds remain unsigned; SignPath signing is intention
 
 ## Eligibility check
 
-Before applying, verify that every component distributed by the project has an OSI-compatible/open-source license acceptable to SignPath Foundation. In particular, confirm the redistribution/license status of bundled font assets such as `BZONE.ttf`. If an asset is proprietary or its license cannot be established, replace or remove it from the project before requesting Foundation signing.
+The project itself is MIT licensed. `BZONE.ttf` is a fan-made font authored by **ScrapPool**, inspired by the Battlezone visual style, and was provided by its author for free use. It is not an extracted game font. That provenance is documented in `THIRD_PARTY_NOTICES.md`.
+
+SignPath Foundation currently requires an OSI-approved open-source license for all bundled components. "Free use" permission is useful provenance, but it is not automatically the same thing as an OSI-approved license. Before submitting the Foundation application, obtain or document an explicit open-source license grant from ScrapPool for `BZONE.ttf` (for example, SIL Open Font License 1.1 if the author agrees), then add the corresponding license text to the repository.
 
 The repository README contains the required **Code signing policy**, including team roles and privacy/network-transfer disclosure.
