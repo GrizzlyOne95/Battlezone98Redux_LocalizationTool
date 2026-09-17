@@ -6,7 +6,7 @@ from pathlib import Path
 
 APP_NAME = "BZLocalizationTool"
 FILE_DESCRIPTION = "Battlezone Localization Tool"
-PRODUCT_NAME = "Battlezone Modding Tools"
+PRODUCT_NAME = "Battlezone Localization Tool"
 COMPANY_NAME = "GrizzlyOne95"
 
 
@@ -21,7 +21,7 @@ def version_from_ref(ref_name: str) -> tuple[tuple[int, int, int, int], str]:
 
 
 def main() -> None:
-    version_tuple, version_text = version_from_ref(os.environ.get("GITHUB_REF_NAME", "dev"))
+    version_tuple, _version_text = version_from_ref(os.environ.get("GITHUB_REF_NAME", "dev"))
     version_csv = ", ".join(str(value) for value in version_tuple)
     dotted_version = ".".join(str(value) for value in version_tuple)
 
@@ -47,7 +47,7 @@ def main() -> None:
           StringStruct('InternalName', '{APP_NAME}'),
           StringStruct('OriginalFilename', '{APP_NAME}.exe'),
           StringStruct('ProductName', '{PRODUCT_NAME}'),
-          StringStruct('ProductVersion', '{version_text}')
+          StringStruct('ProductVersion', '{dotted_version}')
         ]
       )
     ]),
@@ -58,7 +58,7 @@ def main() -> None:
 
     destination = Path(__file__).with_name("windows_version_info.txt")
     destination.write_text(output, encoding="utf-8")
-    print(f"Wrote {destination} for {APP_NAME} {version_text}")
+    print(f"Wrote {destination} for {APP_NAME} {dotted_version}")
 
 
 if __name__ == "__main__":
