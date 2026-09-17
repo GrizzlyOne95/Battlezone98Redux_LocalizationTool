@@ -42,12 +42,12 @@ jobs:
       - name: Build with PyInstaller (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          pyinstaller --onefile --noconsole --name BZ98_Localization_Tool --icon branding/app_icon.png --add-data "BZONE.ttf;." --add-data "branding/app_icon.png;branding" --runtime-hook branding/pyinstaller_icon_hook.py localization.py
+          pyinstaller --onefile --noconsole --name BZ98_Localization_Tool --icon branding/app_icon.ico --add-data "BZONE.ttf;." --add-data "branding/app_icon.ico;branding" --add-data "branding/app_icon.png;branding" --runtime-hook branding/pyinstaller_icon_hook.py localization.py
 
       - name: Build with PyInstaller (Non-Windows)
         if: matrix.os != 'windows-latest'
         run: |
-          pyinstaller --onefile --noconsole --name BZ98_Localization_Tool --icon branding/app_icon.png --add-data "BZONE.ttf:." --add-data "branding/app_icon.png:branding" localization.py
+          pyinstaller --onefile --noconsole --name BZ98_Localization_Tool --icon branding/app_icon.ico --add-data "BZONE.ttf:." --add-data "branding/app_icon.ico:branding" --add-data "branding/app_icon.png:branding" localization.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
