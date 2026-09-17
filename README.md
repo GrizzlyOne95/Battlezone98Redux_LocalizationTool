@@ -9,7 +9,7 @@ A premium, automated localization tool for **Battlezone 98 Redux** modders. Quic
 ## 🎨 New Premium Aesthetics
 The tool has been overhauled to match the **Battlezone Workshop Uploader** style, featuring:
 * **Dark Mode**: Sleek black and neon green high-contrast UI.
-* **Custom Font**: Uses the classic `BZONE` font for that authentic Battlezone feel.
+* **Custom Font**: Uses the fan-made `BZONE` font by ScrapPool, provided for free use and inspired by the Battlezone visual style.
 * **Tabbed Interface**: Cleanly separated tasks for manual entry and automated scanning.
 
 ---
@@ -84,3 +84,5 @@ Official Windows release binaries are built from this repository using GitHub Ac
 
 ## 📜 Credits
 Built for the Battlezone 98 Redux modding community. Features inspired by the Workshop Uploader aesthetics.
+
+`BZONE.ttf` was created by **ScrapPool** as a fan-made typeface inspired by the Battlezone visual style and was provided for free use. It is not presented as an extracted game font. See `THIRD_PARTY_NOTICES.md` for provenance and licensing notes.
