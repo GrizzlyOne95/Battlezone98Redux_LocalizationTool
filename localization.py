@@ -12,6 +12,11 @@ import sys
 # Platform check
 IS_WINDOWS = sys.platform == "win32"
 
+
+class TranslationRateLimitError(RuntimeError):
+    """Raised when the translation provider remains throttled after backoff."""
+
+
 class ToolTip:
     def __init__(self, widget, text, bg="#1a1a1a", fg="#00ffff"):
         self.widget = widget
@@ -321,10 +326,13 @@ class BZ98GuiApp:
 
                 time.sleep(cooldown)
 
-        raise RuntimeError(
+        message = (
             f"{lang} translation failed for '{english_text}' after "
             f"{retries} attempts: {last_error}"
         )
+        if self._is_rate_limit_error(last_error):
+            raise TranslationRateLimitError(message)
+        raise RuntimeError(message)
 
     def translate_text(self, english_text, retries=4):
         """Translate one display string into every configured target language."""
@@ -376,6 +384,14 @@ class BZ98GuiApp:
                     self.log(f"Translating: {english_text}...")
                     try:
                         translations = self.translate_text(english_text)
+                    except TranslationRateLimitError as e:
+                        failed_count += 1
+                        self.progress['value'] += 1
+                        self.log(
+                            f"Google translation is still rate-limited; stopping "
+                            f"this batch so it can be resumed later. ({e})"
+                        )
+                        break
                     except Exception as e:
                         failed_count += 1
                         self.progress['value'] += 1
@@ -507,6 +523,14 @@ class BZ98GuiApp:
                     self.log(f"Translating: {english_text}...")
                     try:
                         translations = self.translate_text(english_text)
+                    except TranslationRateLimitError as e:
+                        failed_count += 1
+                        self.progress['value'] += 1
+                        self.log(
+                            f"Google translation is still rate-limited; stopping "
+                            f"this batch so it can be resumed later. ({e})"
+                        )
+                        break
                     except Exception as e:
                         failed_count += 1
                         self.progress['value'] += 1
