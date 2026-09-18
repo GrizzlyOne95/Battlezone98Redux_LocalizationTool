@@ -18,13 +18,13 @@ The tool has been overhauled to match the **Battlezone Workshop Uploader** style
 
 * **ODF Scanner (NEW)**: 
     * Point the tool at any mod folder.
-    * Automatically extracts `unitName` from `.odf` files.
-    * Uses file names as fallbacks if `unitName` is missing.
+    * Extracts only the player-visible `unitName` value from `.odf` files.
+    * Skips ODFs without `unitName` instead of treating internal filenames or identifiers as localization text.
 * **Smart De-duplication**: Automatically checks your existing CSV and skips any keys that are already present.
 * **Smart Key Generation**: 
     * **Standard Words**: Converted to `names:your_word`.
     * **Mission Titles**: Detection for `.bzn` files to create `mission_title:` keys.
-* **Multi-Language Support**: Translates into French, German, Spanish, Italian, Russian, and Portuguese using Google Translate.
+* **Multi-Language Support**: Translates into French, German, Spanish, Italian, Russian, and Portuguese using Google Translate. Failed translator requests are retried and logged; failed rows are skipped instead of silently filling foreign-language columns with English.
 * **Progress Tracking**: Visual feedback during large batch translations.
 
 ---
