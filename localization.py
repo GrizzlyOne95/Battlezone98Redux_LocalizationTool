@@ -24,6 +24,10 @@ class CloudTranslationError(RuntimeError):
     """Raised when Google Cloud Translation configuration or a batch request fails."""
 
 
+class FreeTranslationError(RuntimeError):
+    """Raised when the credential-free Google HTTP translation path fails."""
+
+
 class ToolTip:
     def __init__(self, widget, text, bg="#1a1a1a", fg="#00ffff"):
         self.widget = widget
@@ -76,6 +80,7 @@ class BZ98GuiApp:
         self._translator_cache = {}
         self._last_translation_request = 0.0
         self._translation_min_interval = 0.4
+        self.bulk_translation_backend = tk.StringVar(value="Free HTTP (no account)")
         self.google_project_id = tk.StringVar(
             value=os.environ.get("GOOGLE_CLOUD_PROJECT", "")
             or os.environ.get("GCLOUD_PROJECT", "")
@@ -152,39 +157,51 @@ class BZ98GuiApp:
         ttk.Entry(path_sub, textvariable=self.csv_path).pack(side="left", fill="x", expand=True, padx=(0, 5))
         ttk.Button(path_sub, text="BROWSE", command=self.browse_csv).pack(side="right")
 
-        # Google Cloud Translation config for true batched ODF translation.
+        # ODF bulk translation backend selection.
         cloud_frame = ttk.LabelFrame(
-            main_frame, text=" GOOGLE CLOUD TRANSLATION (ODF BULK) ", padding=10
+            main_frame, text=" TRANSLATION BACKEND (ODF BULK) ", padding=10
         )
         cloud_frame.pack(fill="x", pady=(0, 10))
         cloud_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(cloud_frame, text="Project ID:").grid(
+        ttk.Label(cloud_frame, text="Backend:").grid(
             row=0, column=0, sticky="w", padx=(0, 8), pady=2
         )
-        ttk.Entry(cloud_frame, textvariable=self.google_project_id).grid(
-            row=0, column=1, columnspan=2, sticky="ew", pady=2
+        backend_combo = ttk.Combobox(
+            cloud_frame,
+            textvariable=self.bulk_translation_backend,
+            values=["Free HTTP (no account)", "Google Cloud v3"],
+            state="readonly",
         )
+        backend_combo.grid(row=0, column=1, columnspan=2, sticky="ew", pady=2)
 
-        ttk.Label(cloud_frame, text="Credentials JSON:").grid(
+        ttk.Label(cloud_frame, text="Cloud Project ID:").grid(
             row=1, column=0, sticky="w", padx=(0, 8), pady=2
         )
+        ttk.Entry(cloud_frame, textvariable=self.google_project_id).grid(
+            row=1, column=1, columnspan=2, sticky="ew", pady=2
+        )
+
+        ttk.Label(cloud_frame, text="Cloud Credentials JSON:").grid(
+            row=2, column=0, sticky="w", padx=(0, 8), pady=2
+        )
         ttk.Entry(cloud_frame, textvariable=self.google_credentials_path).grid(
-            row=1, column=1, sticky="ew", pady=2
+            row=2, column=1, sticky="ew", pady=2
         )
         ttk.Button(
             cloud_frame, text="BROWSE", command=self.browse_google_credentials
-        ).grid(row=1, column=2, padx=(5, 0), pady=2)
+        ).grid(row=2, column=2, padx=(5, 0), pady=2)
 
         ttk.Label(
             cloud_frame,
             text=(
-                "ODF bulk uses the official Google Cloud Translation v3 API and "
-                "batches all names per language. Manual Translate keeps the free "
-                "deep-translator fallback."
+                "Free HTTP is the default: it joins many unit names into each "
+                "request and needs no account or billing. Google Cloud v3 remains "
+                "available as the official authenticated option. Manual Translate "
+                "still uses deep-translator."
             ),
             wraplength=800,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(5, 0))
 
         # Tabs
         self.notebook = ttk.Notebook(main_frame)
@@ -311,6 +328,207 @@ class BZ98GuiApp:
         if hasattr(value, "get"):
             value = value.get()
         return str(value or "").strip()
+
+    @staticmethod
+    def _chunk_free_http_contents(texts, max_chars=4500):
+        """Chunk newline-delimited text conservatively for the unofficial endpoint."""
+        chunks = []
+        current = []
+        current_chars = 0
+
+        for text in texts:
+            text_chars = len(text)
+            if text_chars > max_chars:
+                raise FreeTranslationError(
+                    "A single source string is too long for the free HTTP translator."
+                )
+
+            added = text_chars + (1 if current else 0)
+            if current and current_chars + added > max_chars:
+                chunks.append(current)
+                current = []
+                current_chars = 0
+                added = text_chars
+
+            current.append(text)
+            current_chars += added
+
+        if current:
+            chunks.append(current)
+
+        return chunks
+
+    @staticmethod
+    def _extract_free_http_translation(payload):
+        """Normalize both dict-style and legacy list-style Google responses."""
+        if isinstance(payload, dict):
+            sentences = payload.get("sentences")
+            if isinstance(sentences, list):
+                return "".join(
+                    str(sentence.get("trans", ""))
+                    for sentence in sentences
+                    if isinstance(sentence, dict)
+                )
+
+        if isinstance(payload, list) and payload and isinstance(payload[0], list):
+            pieces = []
+            for sentence in payload[0]:
+                if (
+                    isinstance(sentence, list)
+                    and sentence
+                    and isinstance(sentence[0], str)
+                ):
+                    pieces.append(sentence[0])
+            return "".join(pieces)
+
+        return ""
+
+    @staticmethod
+    def _parse_marker_translation(translated_blob, expected_count):
+        """Recover per-line output if Google rewrites newline boundaries."""
+        marker_re = re.compile(r"\[\[\s*BZ\s*(\d+)\s*\]\]", re.IGNORECASE)
+        matches = list(marker_re.finditer(translated_blob))
+        if len(matches) != expected_count:
+            return None
+
+        results = []
+        for index, match in enumerate(matches):
+            try:
+                marker_index = int(match.group(1))
+            except (TypeError, ValueError):
+                return None
+
+            if marker_index != index:
+                return None
+
+            start = match.end()
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(translated_blob)
+            value = translated_blob[start:end].strip(" \t\r\n:-")
+            if not value:
+                return None
+            results.append(value)
+
+        return results
+
+    def _request_free_http_translation(self, source_text, target):
+        endpoint = "https://translate.googleapis.com/translate_a/single"
+        try:
+            response = requests.post(
+                endpoint,
+                params={
+                    "client": "gtx",
+                    "sl": "en",
+                    "tl": target,
+                    "dt": "t",
+                    "dj": "1",
+                },
+                data={"q": source_text},
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "BZLocalizationTool/2.x",
+                },
+                timeout=45,
+            )
+        except requests.RequestException as e:
+            raise FreeTranslationError(
+                f"Could not reach the free Google Translate HTTP endpoint: {e}"
+            ) from e
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if response.status_code >= 400:
+            detail = ""
+            if isinstance(payload, dict):
+                error = payload.get("error")
+                if isinstance(error, dict):
+                    detail = str(error.get("message", "")).strip()
+            if not detail:
+                detail = str(getattr(response, "text", "")).strip()
+            if response.status_code == 429:
+                detail = detail or "Google is rate-limiting this IP."
+            raise FreeTranslationError(
+                f"Free Google HTTP translation failed (HTTP {response.status_code}): "
+                f"{detail or 'No error details returned.'}"
+            )
+
+        translated = self._extract_free_http_translation(payload)
+        if not translated.strip():
+            raise FreeTranslationError(
+                "The free Google HTTP endpoint returned no translation text."
+            )
+        return translated
+
+    def _translate_free_http_chunk(self, chunk, target):
+        """Translate a chunk in one request, retrying with markers only if needed."""
+        source_text = "\n".join(chunk)
+        translated_blob = self._request_free_http_translation(source_text, target)
+        normalized = translated_blob.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [line.strip() for line in normalized.split("\n")]
+
+        while lines and not lines[-1]:
+            lines.pop()
+
+        if len(lines) == len(chunk) and all(lines):
+            return lines
+
+        marked_source = "\n".join(
+            f"[[BZ{index}]] {text}" for index, text in enumerate(chunk)
+        )
+        marked_blob = self._request_free_http_translation(marked_source, target)
+        parsed = self._parse_marker_translation(marked_blob, len(chunk))
+        if parsed is None:
+            raise FreeTranslationError(
+                "Google returned translated text, but the unit-name boundaries "
+                "could not be mapped safely. No localization rows were written."
+            )
+        return parsed
+
+    def translate_batch_free_http(self, english_texts):
+        """Translate many names with a tiny number of credential-free HTTP requests."""
+        texts = [str(text).strip() for text in english_texts]
+        if not texts:
+            return []
+        if any(not text for text in texts):
+            raise FreeTranslationError("Free HTTP batch contains an empty source string.")
+        if any("\n" in text or "\r" in text for text in texts):
+            raise FreeTranslationError(
+                "Unit names containing line breaks are not supported by the free "
+                "batched translator."
+            )
+
+        chunks = self._chunk_free_http_contents(texts)
+        request_count = len(chunks) * len(self.languages)
+        self.log(
+            f"Free HTTP batch translation: {len(texts)} strings, "
+            f"{len(self.languages)} languages, about {request_count} request(s)."
+        )
+
+        translated_by_language = []
+        for lang_index, lang in enumerate(self.languages, start=1):
+            target = self.lang_codes[lang]
+            translated_texts = []
+
+            for chunk_index, chunk in enumerate(chunks, start=1):
+                self.log(
+                    f"Free HTTP: {lang} ({lang_index}/{len(self.languages)}), "
+                    f"batch {chunk_index}/{len(chunks)} with {len(chunk)} strings..."
+                )
+                translated_texts.extend(
+                    self._translate_free_http_chunk(chunk, target)
+                )
+
+            translated_by_language.append(translated_texts)
+
+        return [
+            [
+                translated_by_language[lang_index][text_index]
+                for lang_index in range(len(self.languages))
+            ]
+            for text_index in range(len(texts))
+        ]
 
     def _load_cloud_credentials(self):
         """Resolve Google Cloud credentials and the billing/project identifier."""
@@ -772,18 +990,25 @@ class BZ98GuiApp:
             self.progress['value'] = 0
             return
 
-        self.log(
-            f"Preparing {len(pending)} untranslated names for official Google "
-            "Cloud Translation v3 batching..."
-        )
+        backend = self._get_string_setting("bulk_translation_backend")
+        source_texts = [english_text for _, english_text, _ in pending]
 
         try:
-            translated_rows = self.translate_batch_cloud(
-                [english_text for _, english_text, _ in pending]
-            )
+            if backend == "Google Cloud v3":
+                self.log(
+                    f"Preparing {len(pending)} untranslated names for official "
+                    "Google Cloud Translation v3 batching..."
+                )
+                translated_rows = self.translate_batch_cloud(source_texts)
+            else:
+                self.log(
+                    f"Preparing {len(pending)} untranslated names for the "
+                    "credential-free Google HTTP batch translator..."
+                )
+                translated_rows = self.translate_batch_free_http(source_texts)
         except Exception as e:
-            self.log(f"Google Cloud bulk translation failed; no rows were written. ({e})")
-            messagebox.showerror("Google Cloud Translation Error", str(e))
+            self.log(f"Bulk translation failed; no rows were written. ({e})")
+            messagebox.showerror("Translation Error", str(e))
             self.btn_bulk.config(state="normal")
             self.progress['value'] = 0
             return
@@ -802,7 +1027,7 @@ class BZ98GuiApp:
 
             self.log(
                 f"BULK SCAN COMPLETE! Added {added_count} new entries using "
-                "Google Cloud batch translation."
+                f"{backend}."
             )
             messagebox.showinfo(
                 "Success",
