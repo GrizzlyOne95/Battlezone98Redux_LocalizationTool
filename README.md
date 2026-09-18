@@ -21,9 +21,10 @@ The tool has been overhauled to match the **Battlezone Workshop Uploader** style
     * Extracts only the player-visible `unitName` value from `.odf` files.
     * Skips ODFs without `unitName` instead of treating internal filenames or identifiers as localization text.
 * **Smart De-duplication**: Automatically checks your existing CSV and skips any keys that are already present.
-* **Smart Key Generation**: 
-    * **Standard Words**: Converted to `names:your_word`.
+* **Stock-Compatible Key Generation**:
+    * **ODF / Standard Names**: Preserves the exact Battlezone lookup text, e.g. `Heavy Tank` → `names:Heavy Tank`, matching the stock table instead of lowercasing/underscore-normalizing it.
     * **Mission Titles**: Detection for `.bzn` files to create `mission_title:` keys.
+* **Stock Table Byte Format**: New rows are written as exactly 8 tilde-delimited fields with CRLF line endings. Western-language columns use Windows-1252 and the Russian column uses Windows-1251, matching the shipped Battlezone localization table instead of appending UTF-8 bytes to a legacy table.
 * **Multi-Language Support**: ODF bulk translation defaults to a **credential-free Google HTTP backend**. It joins many unit names into each request, so a normal scan needs only a handful of HTTP calls instead of one call per name. The official **Google Cloud Translation v3** backend remains available as an optional authenticated choice. The Manual Translate tab keeps `deep-translator` as a fallback.
 * **Progress Tracking**: Visual feedback during large batch translations.
 
@@ -87,8 +88,16 @@ Simply use the **ODF Scanner** tab, browse to your folder, and click **Scan**. T
 
 ### Manual Mode
 Paste English names line-by-line.
-* **Normal**: `Heavy APC` -> `names:heavy_apc`
-* **Missions**: `play01.bzn~The Playground` -> `mission_title:play01.bzn`
+* **Normal**: `Heavy APC` → `names:Heavy APC`
+* **Missions**: `play01.bzn~The Playground` → `mission_title:play01.bzn`
+
+### Battlezone localization table format
+
+The tool writes the same row structure used by the stock `localization_table.csv`:
+
+`Key~English~French~German~Spanish~Italian~Russian~Portuguese`
+
+Each generated row contains exactly eight fields and ends with CRLF. Because the shipped table is not a single UTF-8 file, the writer encodes the key/English/French/German/Spanish/Italian/Portuguese fields as Windows-1252 and Russian as Windows-1251. Values containing the `~` delimiter or embedded line breaks are rejected rather than producing a malformed row.
 
 ---
 
