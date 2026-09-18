@@ -1,0 +1,55 @@
+name: Live Translation Endpoint Probe
+
+on:
+  push:
+    branches:
+      - agent/free-translate-rpc-fallbacks
+    paths:
+      - .github/workflows/live-translation-probe.yml
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install runtime dependencies
+        run: pip install -r requirements.txt
+
+      - name: Probe credential-free translation routes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import localization
+
+          app = localization.BZ98GuiApp.__new__(localization.BZ98GuiApp)
+          app.log = lambda message: print("LOG:", message)
+          sample = "Tank\nReservoir\nScout"
+          target = "fr"
+
+          routes = [
+              ("web RPC / MkEWBc", app._request_free_rpc_translation),
+              ("clients5 / dict-chrome-ex", app._request_free_clients5_translation),
+              ("legacy translate_a/single", app._request_free_legacy_translation),
+          ]
+
+          print("SAMPLE:", repr(sample), "TARGET:", target)
+          print("---- INDIVIDUAL ROUTES ----")
+          for name, func in routes:
+              try:
+                  result = func(sample, target)
+                  print(f"PASS | {name} | {result!r}")
+              except Exception as exc:
+                  print(f"FAIL | {name} | {type(exc).__name__}: {exc}")
+
+          print("---- CURRENT FALLBACK CHAIN ----")
+          try:
+              result = app._request_free_http_translation(sample, target)
+              print("PASS | chain |", repr(result))
+          except Exception as exc:
+              print(f"FAIL | chain | {type(exc).__name__}: {exc}")
+          PY
