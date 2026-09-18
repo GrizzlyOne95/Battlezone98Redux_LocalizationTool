@@ -16,6 +16,16 @@ import sys
 # Platform check
 IS_WINDOWS = sys.platform == "win32"
 
+LOCALIZATION_HEADER = b"Key~English~French~German~Spanish~Italian~Russian~Portuguese"
+LOCALIZATION_COLUMN_NAMES = (
+    "Key", "English", "French", "German", "Spanish", "Italian", "Russian", "Portuguese"
+)
+# The stock Battlezone 98 Redux localization_table.csv is a mixed-codepage table:
+# Western-language columns are Windows-1252 while Russian is Windows-1251.
+LOCALIZATION_ENCODINGS = (
+    "cp1252", "cp1252", "cp1252", "cp1252", "cp1252", "cp1252", "cp1251", "cp1252"
+)
+
 
 class TranslationRateLimitError(RuntimeError):
     """Raised when the free translation provider remains throttled after backoff."""
@@ -323,6 +333,84 @@ class BZ98GuiApp:
             self.log(f"Error reading existing keys: {e}")
 
         return keys
+
+    @staticmethod
+    def make_names_key(display_name):
+        """Return the exact stock lookup key for a player-visible name."""
+        display_name = str(display_name or "").strip()
+        if not display_name:
+            raise ValueError("Cannot create a localization key from an empty name.")
+        if any(ch in display_name for ch in ("~", "\r", "\n")):
+            raise ValueError(
+                "Localization names cannot contain '~' or line breaks because "
+                "Battlezone uses '~' as the field delimiter."
+            )
+        return f"names:{display_name}"
+
+    def validate_target_table_format(self):
+        """Verify that the selected file is a Battlezone localization table."""
+        path = self.csv_path.get()
+        if not os.path.exists(path):
+            raise ValueError("Target localization table does not exist.")
+
+        with open(path, "rb") as f:
+            first_line = f.readline()
+
+        first_line = first_line.rstrip(b"\r\n")
+        if first_line.startswith(b"\xef\xbb\xbf"):
+            first_line = first_line[3:]
+
+        if first_line != LOCALIZATION_HEADER:
+            raise ValueError(
+                "Target file does not have the expected Battlezone localization "
+                "header: Key~English~French~German~Spanish~Italian~Russian~Portuguese"
+            )
+
+    @staticmethod
+    def _encode_localization_row(row):
+        """Encode one row exactly like the stock Battlezone localization table."""
+        if len(row) != len(LOCALIZATION_ENCODINGS):
+            raise ValueError(
+                f"Localization rows must contain exactly 8 fields; got {len(row)}."
+            )
+
+        encoded_fields = []
+        for column_name, value, encoding in zip(
+            LOCALIZATION_COLUMN_NAMES, row, LOCALIZATION_ENCODINGS
+        ):
+            text = str(value)
+            if any(ch in text for ch in ("~", "\r", "\n")):
+                raise ValueError(
+                    f"{column_name} contains '~' or a line break, which cannot be "
+                    "stored safely in Battlezone's tilde-delimited table."
+                )
+            try:
+                encoded_fields.append(text.encode(encoding, errors="strict"))
+            except UnicodeEncodeError as e:
+                bad = text[e.start:e.end]
+                raise ValueError(
+                    f"{column_name} contains character(s) {bad!r} that are not "
+                    f"representable in the stock {encoding} localization column."
+                ) from e
+
+        return b"~".join(encoded_fields) + b"\r\n"
+
+    @staticmethod
+    def _ensure_append_boundary(file_handle):
+        """Ensure the next binary row starts on a fresh line."""
+        file_handle.seek(0, os.SEEK_END)
+        size = file_handle.tell()
+        if not size:
+            return
+
+        file_handle.seek(-1, os.SEEK_END)
+        last = file_handle.read(1)
+        if last != b"\n":
+            file_handle.seek(0, os.SEEK_END)
+            file_handle.write(b"\r\n")
+
+    def _write_localization_row(self, file_handle, row):
+        file_handle.write(self._encode_localization_row(row))
 
     def _get_string_setting(self, attribute_name):
         value = getattr(self, attribute_name, "")
@@ -1034,6 +1122,11 @@ class BZ98GuiApp:
         if not os.path.exists(self.csv_path.get()):
             messagebox.showerror("Error", "Target CSV file not found!")
             return
+        try:
+            self.validate_target_table_format()
+        except ValueError as e:
+            messagebox.showerror("Localization Table Format Error", str(e))
+            return
         threading.Thread(target=self.process_manual, daemon=True).start()
 
     def process_manual(self):
@@ -1051,7 +1144,8 @@ class BZ98GuiApp:
         failed_count = 0
 
         try:
-            with open(self.csv_path.get(), 'a', encoding='utf-8') as f:
+            with open(self.csv_path.get(), 'a+b') as f:
+                self._ensure_append_boundary(f)
                 for line in lines:
                     if "~" in line and ".bzn" in line.lower():
                         key_part, english_text = line.split("~", 1)
@@ -1059,7 +1153,7 @@ class BZ98GuiApp:
                         english_text = english_text.strip()
                     else:
                         english_text = line
-                        safe_key = f"names:{english_text.lower().replace(' ', '_')}"
+                        safe_key = self.make_names_key(english_text)
 
                     if safe_key in existing_keys:
                         self.log(f"Skipping (Duplicate): {safe_key}")
@@ -1084,7 +1178,7 @@ class BZ98GuiApp:
                         continue
 
                     row = [safe_key, english_text] + translations
-                    f.write("~".join(row) + "\n")
+                    self._write_localization_row(f, row)
                     existing_keys.add(safe_key)
                     added_count += 1
                     self.progress['value'] += 1
@@ -1134,7 +1228,7 @@ class BZ98GuiApp:
                     skipped_without_display_name += 1
                     continue
 
-                key = f"names:{unit_name.lower().replace(' ', '_')}"
+                key = self.make_names_key(unit_name)
                 if key in seen_keys:
                     continue
 
@@ -1186,6 +1280,11 @@ class BZ98GuiApp:
         if not os.path.exists(self.csv_path.get()):
             messagebox.showerror("Error", "Target CSV file not found!")
             return
+        try:
+            self.validate_target_table_format()
+        except ValueError as e:
+            messagebox.showerror("Localization Table Format Error", str(e))
+            return
         threading.Thread(target=self.process_bulk, daemon=True).start()
 
     def process_bulk(self):
@@ -1235,12 +1334,13 @@ class BZ98GuiApp:
 
         added_count = 0
         try:
-            with open(self.csv_path.get(), 'a', encoding='utf-8') as f:
+            with open(self.csv_path.get(), 'a+b') as f:
+                self._ensure_append_boundary(f)
                 for (_, english_text, safe_key), translations in zip(
                     pending, translated_rows
                 ):
                     row = [safe_key, english_text] + translations
-                    f.write("~".join(row) + "\n")
+                    self._write_localization_row(f, row)
                     existing_keys.add(safe_key)
                     added_count += 1
                     self.progress['value'] += 1
