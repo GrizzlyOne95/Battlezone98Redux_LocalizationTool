@@ -289,122 +289,143 @@ class FreeHttpBatchTranslationTests(unittest.TestCase):
         self.messages = []
         self.app.log = self.messages.append
 
-    def test_321_short_names_use_one_request_per_language(self):
+    def test_321_short_names_use_one_free_request_per_language(self):
         texts = [f"Unit {index}" for index in range(321)]
         calls = []
 
-        class FakeResponse:
-            status_code = 200
-            text = ""
-
-            def __init__(self, translated):
-                self._translated = translated
-
-            def json(self):
-                return {"sentences": [{"trans": self._translated}]}
-
-        def fake_post(url, params, data, headers, timeout):
-            calls.append(
-                {
-                    "url": url,
-                    "params": params,
-                    "data": data,
-                    "headers": headers,
-                    "timeout": timeout,
-                }
+        def fake_request(source_text, target):
+            calls.append((target, source_text))
+            return "\n".join(
+                f"{target}:{line}" for line in source_text.split("\n")
             )
-            target = params["tl"]
-            translated = "\n".join(
-                f"{target}:{line}" for line in data["q"].split("\n")
-            )
-            return FakeResponse(translated)
 
-        with patch.object(localization.requests, "post", side_effect=fake_post):
+        with patch.object(
+            self.app, "_request_free_http_translation", side_effect=fake_request
+        ):
             translated = self.app.translate_batch_free_http(texts)
 
         self.assertEqual(len(calls), 2)
-        self.assertEqual(
-            [call["params"]["tl"] for call in calls],
-            ["fr", "de"],
-        )
-        self.assertEqual(calls[0]["data"]["q"], "\n".join(texts))
+        self.assertEqual([call[0] for call in calls], ["fr", "de"])
+        self.assertEqual(calls[0][1], "\n".join(texts))
         self.assertEqual(translated[0], ["fr:Unit 0", "de:Unit 0"])
         self.assertEqual(
             translated[-1],
             ["fr:Unit 320", "de:Unit 320"],
         )
 
-    def test_free_http_uses_post_form_payload(self):
-        class FakeResponse:
-            status_code = 200
-            text = ""
+    def test_line_boundary_mismatch_retries_with_markers(self):
+        calls = []
 
-            def json(self):
-                return {"sentences": [{"trans": "Char\nRéservoir"}]}
+        def fake_request(source_text, target):
+            calls.append(source_text)
+            if "[[BZ0]]" not in source_text:
+                return "Char Réservoir"
+            return "[[BZ0]] Char\n[[BZ1]] Réservoir"
 
         self.app.languages = ["French"]
         self.app.lang_codes = {"French": "fr"}
 
         with patch.object(
-            localization.requests, "post", return_value=FakeResponse()
-        ) as post:
-            translated = self.app.translate_batch_free_http(["Tank", "Reservoir"])
-
-        self.assertEqual(translated, [["Char"], ["Réservoir"]])
-        _, kwargs = post.call_args
-        self.assertEqual(
-            kwargs["url"] if "url" in kwargs else post.call_args.args[0],
-            "https://translate.googleapis.com/translate_a/single",
-        )
-        self.assertEqual(kwargs["data"], {"q": "Tank\nReservoir"})
-        self.assertEqual(kwargs["params"]["client"], "gtx")
-        self.assertEqual(kwargs["params"]["dt"], "t")
-        self.assertEqual(kwargs["params"]["dj"], "1")
-
-    def test_line_boundary_mismatch_retries_with_markers(self):
-        calls = []
-
-        class FakeResponse:
-            status_code = 200
-            text = ""
-
-            def __init__(self, translated):
-                self._translated = translated
-
-            def json(self):
-                return {"sentences": [{"trans": self._translated}]}
-
-        def fake_post(url, params, data, headers, timeout):
-            calls.append(data["q"])
-            if "[[BZ0]]" not in data["q"]:
-                return FakeResponse("Char Réservoir")
-            return FakeResponse("[[BZ0]] Char\n[[BZ1]] Réservoir")
-
-        self.app.languages = ["French"]
-        self.app.lang_codes = {"French": "fr"}
-
-        with patch.object(localization.requests, "post", side_effect=fake_post):
+            self.app, "_request_free_http_translation", side_effect=fake_request
+        ):
             translated = self.app.translate_batch_free_http(["Tank", "Reservoir"])
 
         self.assertEqual(len(calls), 2)
         self.assertEqual(translated, [["Char"], ["Réservoir"]])
 
-    def test_429_fails_closed_without_silent_fallback(self):
+    def test_rpc_request_uses_mkewbc_batchexecute(self):
+        translated = "Char\nRéservoir"
+        inner = [
+            None,
+            [[[None, None, None, False, None, [[translated]]]]],
+        ]
+        envelope = [["wrb.fr", "MkEWBc", localization.json.dumps(inner)]]
+
         class FakeResponse:
-            status_code = 429
-            text = "Too Many Requests"
+            status_code = 200
+            text = "\n" + localization.json.dumps(envelope) + "\n"
+
+        with patch.object(localization.requests, "post", return_value=FakeResponse()) as post:
+            result = self.app._request_free_rpc_translation("Tank\nReservoir", "fr")
+
+        self.assertEqual(result, translated)
+        _, kwargs = post.call_args
+        self.assertEqual(kwargs["params"]["rpcids"], "MkEWBc")
+        self.assertIn("f.req", kwargs["data"])
+        self.assertIn("MkEWBc", kwargs["data"]["f.req"])
+
+    def test_free_provider_chain_falls_back_to_clients5(self):
+        with patch.object(
+            self.app,
+            "_request_free_rpc_translation",
+            side_effect=localization.FreeTranslationError("RPC blocked"),
+        ), patch.object(
+            self.app,
+            "_request_free_clients5_translation",
+            return_value="Char",
+        ) as clients5, patch.object(
+            self.app,
+            "_request_free_legacy_translation",
+        ) as legacy:
+            translated = self.app._request_free_http_translation("Tank", "fr")
+
+        self.assertEqual(translated, "Char")
+        clients5.assert_called_once_with("Tank", "fr")
+        legacy.assert_not_called()
+        self.assertTrue(
+            any("fallback succeeded via Chrome-extension endpoint" in msg for msg in self.messages)
+        )
+
+    def test_clients5_endpoint_uses_required_client_id(self):
+        class FakeResponse:
+            status_code = 200
+            text = ""
 
             def json(self):
-                return {}
+                return {"sentences": [{"trans": "Char"}]}
 
-        self.app.languages = ["French"]
-        self.app.lang_codes = {"French": "fr"}
+        with patch.object(localization.requests, "get", return_value=FakeResponse()) as get:
+            translated = self.app._request_free_clients5_translation("Tank", "fr")
 
+        self.assertEqual(translated, "Char")
+        _, kwargs = get.call_args
+        self.assertEqual(kwargs["params"]["client"], "dict-chrome-ex")
+        self.assertEqual(kwargs["params"]["sl"], "en")
+        self.assertEqual(kwargs["params"]["tl"], "fr")
+
+    def test_legacy_429_error_is_concise(self):
+        class FakeResponse:
+            status_code = 429
+            text = "<html><body><h1>We're sorry...</h1>" + ("x" * 5000) + "</body></html>"
+
+            def json(self):
+                raise ValueError("not json")
+
+        with patch.object(localization.requests, "post", return_value=FakeResponse()):
+            with self.assertRaises(localization.FreeTranslationError) as cm:
+                self.app._request_free_legacy_translation("Scout", "fr")
+
+        message = str(cm.exception)
+        self.assertIn("HTTP 429", message)
+        self.assertNotIn("<html>", message)
+        self.assertLess(len(message), 300)
+
+    def test_all_free_routes_fail_with_summary(self):
+        error = localization.FreeTranslationError("blocked")
         with patch.object(
-            localization.requests, "post", return_value=FakeResponse()
+            self.app, "_request_free_rpc_translation", side_effect=error
+        ), patch.object(
+            self.app, "_request_free_clients5_translation", side_effect=error
+        ), patch.object(
+            self.app, "_request_free_legacy_translation", side_effect=error
         ):
-            with self.assertRaises(localization.FreeTranslationError):
-                self.app.translate_batch_free_http(["Scout", "Tank"])
+            with self.assertRaises(localization.FreeTranslationError) as cm:
+                self.app._request_free_http_translation("Scout", "fr")
+
+        message = str(cm.exception)
+        self.assertIn("web RPC", message)
+        self.assertIn("Chrome-extension endpoint", message)
+        self.assertIn("legacy endpoint", message)
 
 
 if __name__ == "__main__":
