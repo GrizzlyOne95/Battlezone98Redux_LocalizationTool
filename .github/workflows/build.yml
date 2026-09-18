@@ -2,6 +2,8 @@ name: Build and Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -40,8 +42,21 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller pillow
 
+      - name: Resolve package version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(tr -d '[:space:]' < VERSION)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Generate Windows version metadata
         if: matrix.os == 'windows-latest'
+        env:
+          GITHUB_REF_NAME: ${{ steps.version.outputs.version }}
         run: python branding/make_windows_version_info.py
 
       - name: Build with PyInstaller (Windows)
@@ -100,8 +115,22 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: "${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'chore(release): v')) }}"
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: release_version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v$(tr -d '[:space:]' < VERSION)"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
@@ -109,6 +138,8 @@ jobs:
 
       - name: Prepare versioned release archives
         shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p release_assets/windows release_assets/linux release_assets/macos
@@ -119,15 +150,18 @@ jobs:
 
           chmod +x release_assets/linux/BZLocalizationTool release_assets/macos/BZLocalizationTool
 
-          (cd release_assets/windows && zip -q ../Battlezone98Redux_LocalizationTool-${GITHUB_REF_NAME}-windows.zip BZLocalizationTool.exe)
-          (cd release_assets/linux && tar -czf ../Battlezone98Redux_LocalizationTool-${GITHUB_REF_NAME}-linux.tar.gz BZLocalizationTool)
-          (cd release_assets/macos && tar -czf ../Battlezone98Redux_LocalizationTool-${GITHUB_REF_NAME}-macos.tar.gz BZLocalizationTool)
+          (cd release_assets/windows && zip -q ../Battlezone98Redux_LocalizationTool-${RELEASE_TAG}-windows.zip BZLocalizationTool.exe)
+          (cd release_assets/linux && tar -czf ../Battlezone98Redux_LocalizationTool-${RELEASE_TAG}-linux.tar.gz BZLocalizationTool)
+          (cd release_assets/macos && tar -czf ../Battlezone98Redux_LocalizationTool-${RELEASE_TAG}-macos.tar.gz BZLocalizationTool)
 
           ls -lh release_assets/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release_version.outputs.tag }}
+          name: ${{ steps.release_version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: |
             release_assets/Battlezone98Redux_LocalizationTool-v*-windows.zip
             release_assets/Battlezone98Redux_LocalizationTool-v*-linux.tar.gz
