@@ -5,6 +5,7 @@ from deep_translator.exceptions import TooManyRequests
 import google.auth
 from google.auth.transport.requests import Request as GoogleAuthRequest
 import requests
+import json
 import time
 import threading
 import os
@@ -360,7 +361,7 @@ class BZ98GuiApp:
 
     @staticmethod
     def _extract_free_http_translation(payload):
-        """Normalize both dict-style and legacy list-style Google responses."""
+        """Normalize common unauthenticated Google translation response shapes."""
         if isinstance(payload, dict):
             sentences = payload.get("sentences")
             if isinstance(sentences, list):
@@ -370,16 +371,29 @@ class BZ98GuiApp:
                     if isinstance(sentence, dict)
                 )
 
-        if isinstance(payload, list) and payload and isinstance(payload[0], list):
-            pieces = []
-            for sentence in payload[0]:
-                if (
-                    isinstance(sentence, list)
-                    and sentence
-                    and isinstance(sentence[0], str)
-                ):
-                    pieces.append(sentence[0])
-            return "".join(pieces)
+        if isinstance(payload, list) and payload:
+            if all(isinstance(item, str) for item in payload):
+                return "\n".join(payload)
+
+            first = payload[0]
+            if isinstance(first, list):
+                pieces = []
+                for sentence in first:
+                    if (
+                        isinstance(sentence, list)
+                        and sentence
+                        and isinstance(sentence[0], str)
+                    ):
+                        pieces.append(sentence[0])
+                if pieces:
+                    return "".join(pieces)
+
+                try:
+                    nested = first[0][0][0][0]
+                    if isinstance(nested, list):
+                        return "".join(str(piece) for piece in nested)
+                except (IndexError, TypeError):
+                    pass
 
         return ""
 
@@ -410,7 +424,192 @@ class BZ98GuiApp:
 
         return results
 
-    def _request_free_http_translation(self, source_text, target):
+    @staticmethod
+    def _short_http_error(response):
+        """Return a useful HTTP error without dumping Google's HTML block page."""
+        status = getattr(response, "status_code", "?")
+        if status == 429:
+            return "HTTP 429: Google rejected this endpoint for this IP/network."
+        if status == 403:
+            return "HTTP 403: Google rejected this endpoint for this request."
+
+        try:
+            payload = response.json()
+        except (ValueError, TypeError):
+            payload = None
+
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict):
+                message = str(error.get("message", "")).strip()
+                if message:
+                    return f"HTTP {status}: {message}"
+
+        text = re.sub(r"<[^>]+>", " ", str(getattr(response, "text", "")))
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > 180:
+            text = text[:177] + "..."
+        return f"HTTP {status}: {text or 'no error details returned'}"
+
+    @staticmethod
+    def _parse_google_rpc_response(response_text):
+        """Parse Google Translate's MkEWBc batchexecute response into plain text."""
+        token_found = False
+        assembled = ""
+        opening_bracket = 0
+        closing_bracket = 0
+
+        for line in str(response_text).split("\n"):
+            token_found = token_found or '"MkEWBc"' in line[:80]
+            if not token_found:
+                continue
+
+            in_string = False
+            escaped = False
+            for char in line:
+                if escaped:
+                    escaped = False
+                    continue
+                if char == "\\":
+                    escaped = True
+                    continue
+                if char == '"':
+                    in_string = not in_string
+                    continue
+                if not in_string:
+                    if char == "[":
+                        opening_bracket += 1
+                    elif char == "]":
+                        closing_bracket += 1
+
+            assembled += line
+            if opening_bracket and opening_bracket == closing_bracket:
+                break
+
+        if not assembled:
+            raise FreeTranslationError(
+                "Google Translate web RPC returned an unrecognized response."
+            )
+
+        try:
+            envelope = json.loads(assembled)
+            inner = json.loads(envelope[0][2])
+            segment = inner[1][0][0]
+            separator = " " if segment[3] else ""
+            translated = separator.join(
+                str(part[0])
+                for part in segment[5]
+                if isinstance(part, list) and part and part[0] is not None
+            )
+        except (ValueError, TypeError, IndexError, KeyError) as e:
+            raise FreeTranslationError(
+                f"Google Translate web RPC response could not be parsed: {e}"
+            ) from e
+
+        if not translated.strip():
+            raise FreeTranslationError(
+                "Google Translate web RPC returned an empty translation."
+            )
+        return translated.strip()
+
+    def _request_free_rpc_translation(self, source_text, target):
+        endpoint = "https://translate.google.com/_/TranslateWebserverUi/data/batchexecute"
+        rpc_payload = json.dumps(
+            [[source_text, "en", target, True], [None]],
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        rpc_request = json.dumps(
+            [[["MkEWBc", rpc_payload, None, "generic"]]],
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+
+        try:
+            response = requests.post(
+                endpoint,
+                params={
+                    "rpcids": "MkEWBc",
+                    "bl": "boq_translate-webserver_20201207.13_p0",
+                    "soc-app": "1",
+                    "soc-platform": "1",
+                    "soc-device": "1",
+                    "rt": "c",
+                },
+                data={"f.req": rpc_request},
+                headers={
+                    "Accept": "*/*",
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                    "Origin": "https://translate.google.com",
+                    "Referer": "https://translate.google.com/",
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/140.0.0.0 Safari/537.36"
+                    ),
+                },
+                timeout=45,
+            )
+        except requests.RequestException as e:
+            raise FreeTranslationError(
+                f"Google Translate web RPC connection failed: {e}"
+            ) from e
+
+        if response.status_code >= 400:
+            raise FreeTranslationError(
+                "Google Translate web RPC failed: "
+                + self._short_http_error(response)
+            )
+
+        return self._parse_google_rpc_response(response.text)
+
+    def _request_free_clients5_translation(self, source_text, target):
+        endpoint = "https://clients5.google.com/translate_a/t"
+        try:
+            response = requests.get(
+                endpoint,
+                params={
+                    "client": "dict-chrome-ex",
+                    "sl": "en",
+                    "tl": target,
+                    "q": source_text,
+                },
+                headers={
+                    "Accept": "application/json,text/plain,*/*",
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/140.0.0.0 Safari/537.36"
+                    ),
+                },
+                timeout=45,
+            )
+        except requests.RequestException as e:
+            raise FreeTranslationError(
+                f"Google Chrome-extension translation endpoint failed to connect: {e}"
+            ) from e
+
+        if response.status_code >= 400:
+            raise FreeTranslationError(
+                "Google Chrome-extension translation endpoint failed: "
+                + self._short_http_error(response)
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as e:
+            raise FreeTranslationError(
+                "Google Chrome-extension translation endpoint returned invalid JSON."
+            ) from e
+
+        translated = self._extract_free_http_translation(payload)
+        if not translated.strip():
+            raise FreeTranslationError(
+                "Google Chrome-extension translation endpoint returned no translation text."
+            )
+        return translated
+
+    def _request_free_legacy_translation(self, source_text, target):
         endpoint = "https://translate.googleapis.com/translate_a/single"
         try:
             response = requests.post(
@@ -431,35 +630,56 @@ class BZ98GuiApp:
             )
         except requests.RequestException as e:
             raise FreeTranslationError(
-                f"Could not reach the free Google Translate HTTP endpoint: {e}"
+                f"Legacy Google translation endpoint failed to connect: {e}"
             ) from e
+
+        if response.status_code >= 400:
+            raise FreeTranslationError(
+                "Legacy Google translation endpoint failed: "
+                + self._short_http_error(response)
+            )
 
         try:
             payload = response.json()
-        except ValueError:
-            payload = None
-
-        if response.status_code >= 400:
-            detail = ""
-            if isinstance(payload, dict):
-                error = payload.get("error")
-                if isinstance(error, dict):
-                    detail = str(error.get("message", "")).strip()
-            if not detail:
-                detail = str(getattr(response, "text", "")).strip()
-            if response.status_code == 429:
-                detail = detail or "Google is rate-limiting this IP."
+        except ValueError as e:
             raise FreeTranslationError(
-                f"Free Google HTTP translation failed (HTTP {response.status_code}): "
-                f"{detail or 'No error details returned.'}"
-            )
+                "Legacy Google translation endpoint returned invalid JSON."
+            ) from e
 
         translated = self._extract_free_http_translation(payload)
         if not translated.strip():
             raise FreeTranslationError(
-                "The free Google HTTP endpoint returned no translation text."
+                "Legacy Google translation endpoint returned no translation text."
             )
         return translated
+
+    def _request_free_http_translation(self, source_text, target):
+        """Try several credential-free Google routes without retrying one blocked route."""
+        providers = [
+            ("web RPC", self._request_free_rpc_translation),
+            ("Chrome-extension endpoint", self._request_free_clients5_translation),
+            ("legacy endpoint", self._request_free_legacy_translation),
+        ]
+        failures = []
+
+        for provider_name, provider in providers:
+            try:
+                translated = provider(source_text, target)
+                if failures:
+                    self.log(
+                        f"Free translator fallback succeeded via {provider_name}."
+                    )
+                return translated
+            except FreeTranslationError as e:
+                failures.append(f"{provider_name}: {e}")
+                self.log(f"Free translator {provider_name} unavailable; trying fallback.")
+
+        summary = " | ".join(failures)
+        if len(summary) > 700:
+            summary = summary[:697] + "..."
+        raise FreeTranslationError(
+            "All credential-free Google translation routes failed. " + summary
+        )
 
     def _translate_free_http_chunk(self, chunk, target):
         """Translate a chunk in one request, retrying with markers only if needed."""
