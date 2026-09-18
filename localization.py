@@ -2,6 +2,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, filedialog
 from deep_translator import GoogleTranslator
 from deep_translator.exceptions import TooManyRequests
+import google.auth
+from google.auth.transport.requests import Request as GoogleAuthRequest
+import requests
 import time
 import threading
 import os
@@ -14,7 +17,11 @@ IS_WINDOWS = sys.platform == "win32"
 
 
 class TranslationRateLimitError(RuntimeError):
-    """Raised when the translation provider remains throttled after backoff."""
+    """Raised when the free translation provider remains throttled after backoff."""
+
+
+class CloudTranslationError(RuntimeError):
+    """Raised when Google Cloud Translation configuration or a batch request fails."""
 
 
 class ToolTip:
@@ -47,7 +54,7 @@ class BZ98GuiApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Battlezone 98 Redux - Localization Tool")
-        self.root.geometry("900x950")
+        self.root.geometry("900x1030")
         
         # Colors (Matched to Workshop Uploader)
         self.colors = {
@@ -69,6 +76,13 @@ class BZ98GuiApp:
         self._translator_cache = {}
         self._last_translation_request = 0.0
         self._translation_min_interval = 0.4
+        self.google_project_id = tk.StringVar(
+            value=os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+            or os.environ.get("GCLOUD_PROJECT", "")
+        )
+        self.google_credentials_path = tk.StringVar(
+            value=os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+        )
 
         self.load_custom_font()
         self.setup_styles()
@@ -137,6 +151,40 @@ class BZ98GuiApp:
         path_sub.pack(fill="x")
         ttk.Entry(path_sub, textvariable=self.csv_path).pack(side="left", fill="x", expand=True, padx=(0, 5))
         ttk.Button(path_sub, text="BROWSE", command=self.browse_csv).pack(side="right")
+
+        # Google Cloud Translation config for true batched ODF translation.
+        cloud_frame = ttk.LabelFrame(
+            main_frame, text=" GOOGLE CLOUD TRANSLATION (ODF BULK) ", padding=10
+        )
+        cloud_frame.pack(fill="x", pady=(0, 10))
+        cloud_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(cloud_frame, text="Project ID:").grid(
+            row=0, column=0, sticky="w", padx=(0, 8), pady=2
+        )
+        ttk.Entry(cloud_frame, textvariable=self.google_project_id).grid(
+            row=0, column=1, columnspan=2, sticky="ew", pady=2
+        )
+
+        ttk.Label(cloud_frame, text="Credentials JSON:").grid(
+            row=1, column=0, sticky="w", padx=(0, 8), pady=2
+        )
+        ttk.Entry(cloud_frame, textvariable=self.google_credentials_path).grid(
+            row=1, column=1, sticky="ew", pady=2
+        )
+        ttk.Button(
+            cloud_frame, text="BROWSE", command=self.browse_google_credentials
+        ).grid(row=1, column=2, padx=(5, 0), pady=2)
+
+        ttk.Label(
+            cloud_frame,
+            text=(
+                "ODF bulk uses the official Google Cloud Translation v3 API and "
+                "batches all names per language. Manual Translate keeps the free "
+                "deep-translator fallback."
+            ),
+            wraplength=800,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(5, 0))
 
         # Tabs
         self.notebook = ttk.Notebook(main_frame)
@@ -218,6 +266,13 @@ class BZ98GuiApp:
         d = filedialog.askdirectory()
         if d: self.scan_folder_path.set(d)
 
+    def browse_google_credentials(self):
+        f = filedialog.askopenfilename(
+            filetypes=[("Google credentials", "*.json"), ("All Files", "*.*")]
+        )
+        if f:
+            self.google_credentials_path.set(f)
+
     def get_existing_keys(self):
         """Read localization keys without decoding the translated columns.
 
@@ -250,6 +305,198 @@ class BZ98GuiApp:
             self.log(f"Error reading existing keys: {e}")
 
         return keys
+
+    def _get_string_setting(self, attribute_name):
+        value = getattr(self, attribute_name, "")
+        if hasattr(value, "get"):
+            value = value.get()
+        return str(value or "").strip()
+
+    def _load_cloud_credentials(self):
+        """Resolve Google Cloud credentials and the billing/project identifier."""
+        scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+        credentials_path = self._get_string_setting("google_credentials_path")
+        project_id = (
+            self._get_string_setting("google_project_id")
+            or os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+            or os.environ.get("GCLOUD_PROJECT", "").strip()
+        )
+
+        try:
+            if credentials_path:
+                if not os.path.isfile(credentials_path):
+                    raise CloudTranslationError(
+                        f"Google credentials file not found: {credentials_path}"
+                    )
+                credentials, detected_project = google.auth.load_credentials_from_file(
+                    credentials_path, scopes=scopes
+                )
+            else:
+                credentials, detected_project = google.auth.default(scopes=scopes)
+        except CloudTranslationError:
+            raise
+        except Exception as e:
+            raise CloudTranslationError(
+                "Google Cloud credentials are not configured. Select a service "
+                "account JSON file (or configure Application Default Credentials) "
+                f"and try again. Details: {e}"
+            ) from e
+
+        project_id = project_id or detected_project or getattr(
+            credentials, "project_id", None
+        )
+        if not project_id:
+            raise CloudTranslationError(
+                "Google Cloud Project ID is required. Enter it in the ODF Bulk "
+                "Google Cloud section or set GOOGLE_CLOUD_PROJECT."
+            )
+
+        try:
+            if not credentials.valid:
+                credentials.refresh(GoogleAuthRequest())
+        except Exception as e:
+            raise CloudTranslationError(
+                f"Could not authenticate to Google Cloud Translation: {e}"
+            ) from e
+
+        if not getattr(credentials, "token", None):
+            raise CloudTranslationError(
+                "Google Cloud authentication completed without an access token."
+            )
+
+        return str(project_id).strip(), credentials
+
+    @staticmethod
+    def _chunk_cloud_contents(texts, max_codepoints=30000, max_items=1024):
+        """Keep normal ODF scans to one request while respecting v3 hard limits."""
+        chunks = []
+        current = []
+        current_codepoints = 0
+
+        for text in texts:
+            text_codepoints = len(text)
+            if text_codepoints > max_codepoints:
+                raise CloudTranslationError(
+                    "A single source string exceeds Google Cloud Translation's "
+                    f"{max_codepoints:,}-codepoint synchronous request limit."
+                )
+
+            if current and (
+                len(current) >= max_items
+                or current_codepoints + text_codepoints > max_codepoints
+            ):
+                chunks.append(current)
+                current = []
+                current_codepoints = 0
+
+            current.append(text)
+            current_codepoints += text_codepoints
+
+        if current:
+            chunks.append(current)
+
+        return chunks
+
+    def translate_batch_cloud(self, english_texts):
+        """Translate many source strings with one v3 request per language when possible."""
+        texts = [str(text).strip() for text in english_texts]
+        if not texts:
+            return []
+        if any(not text for text in texts):
+            raise CloudTranslationError("Google Cloud batch contains an empty source string.")
+
+        chunks = self._chunk_cloud_contents(texts)
+        project_id, credentials = self._load_cloud_credentials()
+        endpoint = (
+            "https://translation.googleapis.com/v3/projects/"
+            f"{project_id}:translateText"
+        )
+        request_count = len(chunks) * len(self.languages)
+        self.log(
+            f"Google Cloud batch translation: {len(texts)} strings, "
+            f"{len(self.languages)} languages, {request_count} API request(s)."
+        )
+
+        translated_by_language = []
+        for lang_index, lang in enumerate(self.languages, start=1):
+            target = self.lang_codes[lang]
+            translated_texts = []
+
+            for chunk_index, chunk in enumerate(chunks, start=1):
+                self.log(
+                    f"Google Cloud: {lang} ({lang_index}/{len(self.languages)}), "
+                    f"batch {chunk_index}/{len(chunks)} with {len(chunk)} strings..."
+                )
+                try:
+                    response = requests.post(
+                        endpoint,
+                        headers={
+                            "Authorization": f"Bearer {credentials.token}",
+                            "x-goog-user-project": project_id,
+                            "Content-Type": "application/json; charset=utf-8",
+                        },
+                        json={
+                            "sourceLanguageCode": "en",
+                            "targetLanguageCode": target,
+                            "mimeType": "text/plain",
+                            "contents": chunk,
+                        },
+                        timeout=90,
+                    )
+                except requests.RequestException as e:
+                    raise CloudTranslationError(
+                        f"{lang} request could not reach Google Cloud Translation: {e}"
+                    ) from e
+
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+
+                if response.status_code >= 400:
+                    detail = ""
+                    if isinstance(payload, dict):
+                        error = payload.get("error", {})
+                        if isinstance(error, dict):
+                            detail = str(error.get("message", "")).strip()
+                    if not detail:
+                        detail = str(getattr(response, "text", "")).strip()
+                    if not detail:
+                        detail = "No error details returned."
+                    raise CloudTranslationError(
+                        f"{lang} Google Cloud request failed (HTTP "
+                        f"{response.status_code}): {detail}"
+                    )
+
+                translations = payload.get("translations") if isinstance(payload, dict) else None
+                if not isinstance(translations, list) or len(translations) != len(chunk):
+                    raise CloudTranslationError(
+                        f"{lang} returned {0 if not isinstance(translations, list) else len(translations)} "
+                        f"translations for {len(chunk)} source strings."
+                    )
+
+                batch_results = []
+                for item in translations:
+                    translated = (
+                        str(item.get("translatedText", "")).strip()
+                        if isinstance(item, dict)
+                        else ""
+                    )
+                    if not translated:
+                        raise CloudTranslationError(
+                            f"{lang} returned an empty translation in the batch."
+                        )
+                    batch_results.append(translated)
+
+                translated_texts.extend(batch_results)
+
+            translated_by_language.append(translated_texts)
+
+        return [
+            [translated_by_language[lang_index][text_index]
+             for lang_index in range(len(self.languages))]
+            for text_index in range(len(texts))
+        ]
 
     def _get_translator(self, target):
         cache = getattr(self, '_translator_cache', None)
@@ -509,34 +756,44 @@ class BZ98GuiApp:
         self.progress['value'] = 0
 
         existing_keys = self.get_existing_keys()
-        added_count = 0
-        failed_count = 0
+        pending = []
+
+        for path, english_text, safe_key in self.discovered_odfs:
+            if safe_key in existing_keys:
+                self.log(f"Skipping (Duplicate): {safe_key}")
+                self.progress['value'] += 1
+                continue
+            pending.append((path, english_text, safe_key))
+
+        if not pending:
+            self.log("BULK SCAN COMPLETE! No untranslated entries were found.")
+            messagebox.showinfo("Success", "No untranslated entries were found.")
+            self.btn_bulk.config(state="normal")
+            self.progress['value'] = 0
+            return
+
+        self.log(
+            f"Preparing {len(pending)} untranslated names for official Google "
+            "Cloud Translation v3 batching..."
+        )
 
         try:
+            translated_rows = self.translate_batch_cloud(
+                [english_text for _, english_text, _ in pending]
+            )
+        except Exception as e:
+            self.log(f"Google Cloud bulk translation failed; no rows were written. ({e})")
+            messagebox.showerror("Google Cloud Translation Error", str(e))
+            self.btn_bulk.config(state="normal")
+            self.progress['value'] = 0
+            return
+
+        added_count = 0
+        try:
             with open(self.csv_path.get(), 'a', encoding='utf-8') as f:
-                for path, english_text, safe_key in self.discovered_odfs:
-                    if safe_key in existing_keys:
-                        self.log(f"Skipping (Duplicate): {safe_key}")
-                        self.progress['value'] += 1
-                        continue
-
-                    self.log(f"Translating: {english_text}...")
-                    try:
-                        translations = self.translate_text(english_text)
-                    except TranslationRateLimitError as e:
-                        failed_count += 1
-                        self.progress['value'] += 1
-                        self.log(
-                            f"Google translation is still rate-limited; stopping "
-                            f"this batch so it can be resumed later. ({e})"
-                        )
-                        break
-                    except Exception as e:
-                        failed_count += 1
-                        self.progress['value'] += 1
-                        self.log(f"Skipping failed translation: {safe_key} ({e})")
-                        continue
-
+                for (_, english_text, safe_key), translations in zip(
+                    pending, translated_rows
+                ):
                     row = [safe_key, english_text] + translations
                     f.write("~".join(row) + "\n")
                     existing_keys.add(safe_key)
@@ -544,16 +801,15 @@ class BZ98GuiApp:
                     self.progress['value'] += 1
 
             self.log(
-                f"BULK SCAN COMPLETE! Added {added_count} new entries; "
-                f"{failed_count} failed."
+                f"BULK SCAN COMPLETE! Added {added_count} new entries using "
+                "Google Cloud batch translation."
             )
             messagebox.showinfo(
                 "Success",
-                f"Bulk translation complete. Added {added_count} units. "
-                f"Failed translations: {failed_count}."
+                f"Bulk translation complete. Added {added_count} units."
             )
         except Exception as e:
-            self.log(f"Critical Error: {e}")
+            self.log(f"Could not append translated rows: {e}")
             messagebox.showerror("Error", str(e))
 
         self.btn_bulk.config(state="normal")

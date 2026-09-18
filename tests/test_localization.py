@@ -186,5 +186,100 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(created, ["fr", "de"])
 
 
+class CloudBatchTranslationTests(unittest.TestCase):
+    def setUp(self):
+        self.app = localization.BZ98GuiApp.__new__(localization.BZ98GuiApp)
+        self.app.languages = ["French", "German"]
+        self.app.lang_codes = {"French": "fr", "German": "de"}
+        self.messages = []
+        self.app.log = self.messages.append
+
+    def test_321_names_use_one_request_per_language(self):
+        texts = [f"Unit {index}" for index in range(321)]
+        calls = []
+
+        class DummyCredentials:
+            token = "test-token"
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        def fake_post(url, headers, json, timeout):
+            calls.append(
+                {
+                    "url": url,
+                    "headers": headers,
+                    "json": json,
+                    "timeout": timeout,
+                }
+            )
+            target = json["targetLanguageCode"]
+            return FakeResponse(
+                {
+                    "translations": [
+                        {"translatedText": f"{target}:{text}"}
+                        for text in json["contents"]
+                    ]
+                }
+            )
+
+        with patch.object(
+            self.app,
+            "_load_cloud_credentials",
+            return_value=("battlezone-test", DummyCredentials()),
+        ), patch.object(localization.requests, "post", side_effect=fake_post):
+            translated = self.app.translate_batch_cloud(texts)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["json"]["contents"], texts)
+        self.assertEqual(calls[1]["json"]["contents"], texts)
+        self.assertEqual(
+            [call["json"]["targetLanguageCode"] for call in calls],
+            ["fr", "de"],
+        )
+        self.assertEqual(translated[0], ["fr:Unit 0", "de:Unit 0"])
+        self.assertEqual(
+            translated[-1],
+            ["fr:Unit 320", "de:Unit 320"],
+        )
+
+    def test_cloud_response_count_must_match_source_count(self):
+        class DummyCredentials:
+            token = "test-token"
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"translations": [{"translatedText": "only one"}]}
+
+        self.app.languages = ["French"]
+        self.app.lang_codes = {"French": "fr"}
+
+        with patch.object(
+            self.app,
+            "_load_cloud_credentials",
+            return_value=("battlezone-test", DummyCredentials()),
+        ), patch.object(localization.requests, "post", return_value=FakeResponse()):
+            with self.assertRaises(localization.CloudTranslationError):
+                self.app.translate_batch_cloud(["Scout", "Tank"])
+
+    def test_large_input_is_chunked_only_when_cloud_limits_require_it(self):
+        texts = ["x" * 100 for _ in range(301)]
+        chunks = self.app._chunk_cloud_contents(texts)
+
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(len(chunks[0]), 300)
+        self.assertEqual(len(chunks[1]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

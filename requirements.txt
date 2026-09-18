@@ -1,1 +1,3 @@
 deep-translator
+google-auth
+requests
