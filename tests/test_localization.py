@@ -149,6 +149,23 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(translated, ["translated"])
         self.assertIn(15, sleeps)
 
+    def test_persistent_rate_limit_raises_circuit_breaker_error(self):
+        class AlwaysThrottledTranslator:
+            def __init__(self, source, target):
+                pass
+
+            def translate(self, text):
+                raise RuntimeError("429 Too many requests")
+
+        self.app.languages = ["French"]
+        self.app.lang_codes = {"French": "fr"}
+
+        with patch.object(
+            localization, "GoogleTranslator", AlwaysThrottledTranslator
+        ), patch.object(localization.time, "sleep", lambda _seconds: None):
+            with self.assertRaises(localization.TranslationRateLimitError):
+                self.app.translate_text("Scout", retries=2)
+
     def test_reuses_translator_instances_for_repeated_work(self):
         created = []
 
