@@ -52,6 +52,37 @@ class OdfDisplayNameTests(unittest.TestCase):
         self.assertIsNone(self.app.extract_unit_name(path))
 
 
+class ExistingKeyEncodingTests(unittest.TestCase):
+    def setUp(self):
+        self.app = localization.BZ98GuiApp.__new__(localization.BZ98GuiApp)
+        self.messages = []
+        self.app.log = self.messages.append
+        self.app._translator_cache = {}
+        self.app._last_translation_request = 0.0
+        self.app._translation_min_interval = 0.0
+
+    def test_reads_keys_when_translated_columns_contain_legacy_bytes(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        path = Path(temp_dir.name) / "localization_table.csv"
+        path.write_bytes(
+            b"names:eviscerator~Eviscerator~\xc8viscerateur\n"
+            b"names:scout~Scout~Scout\n"
+        )
+
+        class CsvPath:
+            def get(self_inner):
+                return str(path)
+
+        self.app.csv_path = CsvPath()
+
+        self.assertEqual(
+            self.app.get_existing_keys(),
+            {"names:eviscerator", "names:scout"},
+        )
+        self.assertEqual(self.messages, [])
+
+
 class TranslationTests(unittest.TestCase):
     def setUp(self):
         self.app = localization.BZ98GuiApp.__new__(localization.BZ98GuiApp)
@@ -59,6 +90,9 @@ class TranslationTests(unittest.TestCase):
         self.app.lang_codes = {"French": "fr", "German": "de"}
         self.messages = []
         self.app.log = self.messages.append
+        self.app._translator_cache = {}
+        self.app._last_translation_request = 0.0
+        self.app._translation_min_interval = 0.0
 
     def test_translate_text_returns_real_target_results(self):
         class FakeTranslator:
@@ -89,6 +123,50 @@ class TranslationTests(unittest.TestCase):
         ):
             with self.assertRaises(RuntimeError):
                 self.app.translate_text("Scout", retries=2)
+
+    def test_rate_limit_uses_longer_cooldown_before_retry(self):
+        attempts = {"count": 0}
+        sleeps = []
+
+        class ThrottledTranslator:
+            def __init__(self, source, target):
+                pass
+
+            def translate(self, text):
+                attempts["count"] += 1
+                if attempts["count"] == 1:
+                    raise RuntimeError("429 Too many requests")
+                return "translated"
+
+        self.app.languages = ["French"]
+        self.app.lang_codes = {"French": "fr"}
+
+        with patch.object(localization, "GoogleTranslator", ThrottledTranslator), patch.object(
+            localization.time, "sleep", sleeps.append
+        ):
+            translated = self.app.translate_text("Scout", retries=2)
+
+        self.assertEqual(translated, ["translated"])
+        self.assertIn(15, sleeps)
+
+    def test_reuses_translator_instances_for_repeated_work(self):
+        created = []
+
+        class ReusedTranslator:
+            def __init__(self, source, target):
+                created.append(target)
+                self.target = target
+
+            def translate(self, text):
+                return f"{self.target}:{text}"
+
+        with patch.object(localization, "GoogleTranslator", ReusedTranslator), patch.object(
+            localization.time, "sleep", lambda _seconds: None
+        ):
+            self.app.translate_text("Scout")
+            self.app.translate_text("Tank")
+
+        self.assertEqual(created, ["fr", "de"])
 
 
 if __name__ == "__main__":
