@@ -70,9 +70,9 @@ OriginalFilename: BZLocalizationTool.exe
 
 ### ODF bulk translation backends
 
-**Free HTTP (no account)** is the default. It calls the same credential-free Google translation endpoint commonly used by community translation clients, but sends newline-delimited batches instead of making one request for every unit name. The tool validates that the translated result maps back to every source name before it writes anything to `localization_table.csv`.
+**Free HTTP (no account)** is the default. It sends newline-delimited batches instead of making one request for every unit name. The free path now tries Google's Translate Web `MkEWBc` batchexecute RPC first, then the Google Dictionary/Chrome-extension endpoint (`clients5.google.com`), and only then the older `translate_a/single` endpoint. The tool validates that the translated result maps back to every source name before it writes anything to `localization_table.csv`.
 
-The free endpoint is unofficial and may still be throttled by Google. If that happens, the tool fails closed instead of silently writing English text into translated columns. Because the bulk path uses a very small number of requests, it should be much less likely to trigger the throttling seen with the old per-name workflow.
+These credential-free Google endpoints are unofficial and can change or be throttled independently. If one route is blocked, the tool automatically tries the next route. If all free routes fail, it fails closed instead of silently writing English text into translated columns. HTTP block pages are summarized in the UI rather than dumping raw HTML.
 
 **Google Cloud v3** remains available from the backend dropdown for users who want the official authenticated service. That option requires a Google Cloud project, Cloud Translation enabled, and credentials. You can select a service-account JSON file in the app or use Application Default Credentials, and you can preconfigure `GOOGLE_CLOUD_PROJECT` / `GOOGLE_APPLICATION_CREDENTIALS`.
 
