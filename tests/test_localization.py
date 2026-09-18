@@ -281,5 +281,131 @@ class CloudBatchTranslationTests(unittest.TestCase):
         self.assertEqual(len(chunks[1]), 1)
 
 
+class FreeHttpBatchTranslationTests(unittest.TestCase):
+    def setUp(self):
+        self.app = localization.BZ98GuiApp.__new__(localization.BZ98GuiApp)
+        self.app.languages = ["French", "German"]
+        self.app.lang_codes = {"French": "fr", "German": "de"}
+        self.messages = []
+        self.app.log = self.messages.append
+
+    def test_321_short_names_use_one_request_per_language(self):
+        texts = [f"Unit {index}" for index in range(321)]
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def __init__(self, translated):
+                self._translated = translated
+
+            def json(self):
+                return {"sentences": [{"trans": self._translated}]}
+
+        def fake_post(url, params, data, headers, timeout):
+            calls.append(
+                {
+                    "url": url,
+                    "params": params,
+                    "data": data,
+                    "headers": headers,
+                    "timeout": timeout,
+                }
+            )
+            target = params["tl"]
+            translated = "\n".join(
+                f"{target}:{line}" for line in data["q"].split("\n")
+            )
+            return FakeResponse(translated)
+
+        with patch.object(localization.requests, "post", side_effect=fake_post):
+            translated = self.app.translate_batch_free_http(texts)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            [call["params"]["tl"] for call in calls],
+            ["fr", "de"],
+        )
+        self.assertEqual(calls[0]["data"]["q"], "\n".join(texts))
+        self.assertEqual(translated[0], ["fr:Unit 0", "de:Unit 0"])
+        self.assertEqual(
+            translated[-1],
+            ["fr:Unit 320", "de:Unit 320"],
+        )
+
+    def test_free_http_uses_post_form_payload(self):
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"sentences": [{"trans": "Char\nRéservoir"}]}
+
+        self.app.languages = ["French"]
+        self.app.lang_codes = {"French": "fr"}
+
+        with patch.object(
+            localization.requests, "post", return_value=FakeResponse()
+        ) as post:
+            translated = self.app.translate_batch_free_http(["Tank", "Reservoir"])
+
+        self.assertEqual(translated, [["Char"], ["Réservoir"]])
+        _, kwargs = post.call_args
+        self.assertEqual(
+            kwargs["url"] if "url" in kwargs else post.call_args.args[0],
+            "https://translate.googleapis.com/translate_a/single",
+        )
+        self.assertEqual(kwargs["data"], {"q": "Tank\nReservoir"})
+        self.assertEqual(kwargs["params"]["client"], "gtx")
+        self.assertEqual(kwargs["params"]["dt"], "t")
+        self.assertEqual(kwargs["params"]["dj"], "1")
+
+    def test_line_boundary_mismatch_retries_with_markers(self):
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def __init__(self, translated):
+                self._translated = translated
+
+            def json(self):
+                return {"sentences": [{"trans": self._translated}]}
+
+        def fake_post(url, params, data, headers, timeout):
+            calls.append(data["q"])
+            if "[[BZ0]]" not in data["q"]:
+                return FakeResponse("Char Réservoir")
+            return FakeResponse("[[BZ0]] Char\n[[BZ1]] Réservoir")
+
+        self.app.languages = ["French"]
+        self.app.lang_codes = {"French": "fr"}
+
+        with patch.object(localization.requests, "post", side_effect=fake_post):
+            translated = self.app.translate_batch_free_http(["Tank", "Reservoir"])
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(translated, [["Char"], ["Réservoir"]])
+
+    def test_429_fails_closed_without_silent_fallback(self):
+        class FakeResponse:
+            status_code = 429
+            text = "Too Many Requests"
+
+            def json(self):
+                return {}
+
+        self.app.languages = ["French"]
+        self.app.lang_codes = {"French": "fr"}
+
+        with patch.object(
+            localization.requests, "post", return_value=FakeResponse()
+        ):
+            with self.assertRaises(localization.FreeTranslationError):
+                self.app.translate_batch_free_http(["Scout", "Tank"])
+
+
 if __name__ == "__main__":
     unittest.main()
