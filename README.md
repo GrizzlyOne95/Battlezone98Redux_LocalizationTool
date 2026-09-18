@@ -24,7 +24,7 @@ The tool has been overhauled to match the **Battlezone Workshop Uploader** style
 * **Smart Key Generation**: 
     * **Standard Words**: Converted to `names:your_word`.
     * **Mission Titles**: Detection for `.bzn` files to create `mission_title:` keys.
-* **Multi-Language Support**: Translates into French, German, Spanish, Italian, Russian, and Portuguese using Google Translate. Failed translator requests are retried and logged; failed rows are skipped instead of silently filling foreign-language columns with English.
+* **Multi-Language Support**: ODF bulk translation uses the official **Google Cloud Translation v3** `translateText` API with `contents[]` batching. A normal scan is sent as one request per target language (six API calls total for six languages), with automatic chunking only when Google's synchronous request limits require it. The Manual Translate tab keeps the credential-free `deep-translator` path as a fallback.
 * **Progress Tracking**: Visual feedback during large batch translations.
 
 ---
@@ -68,6 +68,23 @@ OriginalFilename: BZLocalizationTool.exe
    python localization.py
    ```
 
+### Google Cloud setup for ODF bulk translation
+
+ODF bulk translation intentionally uses the official Cloud Translation v3 API instead of sending hundreds or thousands of anonymous web-translation requests.
+
+1. Create or select a Google Cloud project, enable **Cloud Translation API**, and enable billing for that project.
+2. Authenticate with either:
+   - a service-account JSON file selected in the app, or
+   - Google Application Default Credentials (ADC).
+3. Enter the Google Cloud **Project ID** in the app. If the selected credentials file contains the project ID, the tool can detect it automatically.
+4. Click **COLLECT & TRANSLATE ALL** after scanning ODFs.
+
+The tool gathers all untranslated names first, then submits the names together in `contents[]` for each target language. For a 321-name scan that fits the synchronous size limit, French is one request, German is one request, and so on.
+
+You can also preconfigure the executable with `GOOGLE_CLOUD_PROJECT` and `GOOGLE_APPLICATION_CREDENTIALS`.
+
+**Do not commit service-account JSON credentials to this repository or to a mod project.**
+
 ---
 
 ## 📂 Input Formats
@@ -96,7 +113,7 @@ Free code signing is provided by [SignPath.io](https://signpath.io/), certificat
 
 This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
 
-When the user explicitly requests a translation, the text selected for translation is sent to Google Translate through the open-source `deep-translator` dependency. Google's privacy policy is available at https://policies.google.com/privacy. This project does not intentionally collect application telemetry.
+When the user explicitly runs **ODF bulk translation**, the selected source names are sent to the official Google Cloud Translation v3 API using the Google Cloud credentials configured by the user. The **Manual Translate** tab uses the open-source `deep-translator` dependency as a credential-free fallback. This project does not intentionally collect application telemetry or store Google Cloud credential contents.
 
 Official Windows release binaries are built from this repository using GitHub Actions. Once SignPath Foundation signing is enabled for the project, version-tagged Windows releases are submitted from the GitHub-hosted build pipeline to SignPath for Authenticode signing and require release approval before publication.
 
