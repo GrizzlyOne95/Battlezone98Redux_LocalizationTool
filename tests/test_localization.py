@@ -83,6 +83,94 @@ class ExistingKeyEncodingTests(unittest.TestCase):
         self.assertEqual(self.messages, [])
 
 
+class LocalizationFormatTests(unittest.TestCase):
+    def setUp(self):
+        self.app = localization.BZ98GuiApp.__new__(localization.BZ98GuiApp)
+
+    def test_names_key_preserves_stock_case_spaces_and_punctuation(self):
+        self.assertEqual(
+            self.app.make_names_key("Heavy Tank"),
+            "names:Heavy Tank",
+        )
+        self.assertEqual(
+            self.app.make_names_key("Day Wrecker"),
+            "names:Day Wrecker",
+        )
+        self.assertEqual(
+            self.app.make_names_key("apc_1"),
+            "names:apc_1",
+        )
+
+    def test_row_encoding_matches_stock_mixed_codepages_and_crlf(self):
+        row = [
+            "names:Heavy Tank",
+            "Heavy Tank",
+            "Char lourd",
+            "Schwerer Panzer",
+            "Tanque pesado",
+            "Carro pesante",
+            "Тяжёлый танк",
+            "Tanque pesado",
+        ]
+
+        encoded = self.app._encode_localization_row(row)
+
+        self.assertTrue(encoded.endswith(b"\r\n"))
+        fields = encoded[:-2].split(b"~")
+        self.assertEqual(len(fields), 8)
+        self.assertEqual(fields[0].decode("cp1252"), "names:Heavy Tank")
+        self.assertEqual(fields[2].decode("cp1252"), "Char lourd")
+        self.assertEqual(fields[6].decode("cp1251"), "Тяжёлый танк")
+        self.assertEqual(fields[7].decode("cp1252"), "Tanque pesado")
+
+    def test_row_writer_rejects_delimiter_inside_field(self):
+        row = [
+            "names:Bad~Key",
+            "Bad",
+            "Bad",
+            "Bad",
+            "Bad",
+            "Bad",
+            "Плохо",
+            "Bad",
+        ]
+
+        with self.assertRaises(ValueError):
+            self.app._encode_localization_row(row)
+
+    def test_target_table_requires_stock_header(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        path = Path(temp_dir.name) / "localization_table.csv"
+        path.write_bytes(
+            localization.LOCALIZATION_HEADER
+            + b"\r\n"
+            + b"~~~~~~~\r\n"
+        )
+
+        class CsvPath:
+            def get(self_inner):
+                return str(path)
+
+        self.app.csv_path = CsvPath()
+        self.app.validate_target_table_format()
+
+    def test_target_table_rejects_wrong_header(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        path = Path(temp_dir.name) / "localization_table.csv"
+        path.write_bytes(b"Key,English,French\r\n")
+
+        class CsvPath:
+            def get(self_inner):
+                return str(path)
+
+        self.app.csv_path = CsvPath()
+
+        with self.assertRaises(ValueError):
+            self.app.validate_target_table_format()
+
+
 class TranslationTests(unittest.TestCase):
     def setUp(self):
         self.app = localization.BZ98GuiApp.__new__(localization.BZ98GuiApp)
