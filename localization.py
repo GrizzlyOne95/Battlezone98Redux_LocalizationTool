@@ -225,9 +225,9 @@ class BZ98GuiApp:
     def translate_text(self, english_text, retries=2):
         """Translate one display string into every configured target language.
 
-        Translation failures are never silently replaced with the English source
-        text. After the configured retries, the caller gets an exception and can
-        skip the row instead of writing a misleading localization entry.
+        A failed translator request must not silently become an English value in
+        a foreign-language column. After retries are exhausted, the caller
+        skips the row and records the failure in the activity log.
         """
         translations = []
 
@@ -238,9 +238,14 @@ class BZ98GuiApp:
             for attempt in range(1, retries + 1):
                 try:
                     time.sleep(0.4)
-                    translated = GoogleTranslator(source='en', target=target).translate(english_text)
+                    translated = GoogleTranslator(
+                        source='en',
+                        target=target,
+                    ).translate(english_text)
+
                     if translated is None or not str(translated).strip():
                         raise RuntimeError("translator returned an empty result")
+
                     translations.append(str(translated).strip())
                     break
                 except Exception as e:
@@ -267,17 +272,18 @@ class BZ98GuiApp:
 
     def process_manual(self):
         raw_text = self.text_input.get("1.0", tk.END).strip()
-        if not raw_text: return
-        
-        lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
+        if not raw_text:
+            return
+
+        lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
         self.btn_run.config(state='disabled')
         self.progress['maximum'] = len(lines)
         self.progress['value'] = 0
-        
+
         existing_keys = self.get_existing_keys()
         added_count = 0
         failed_count = 0
-        
+
         try:
             with open(self.csv_path.get(), 'a', encoding='utf-8') as f:
                 for line in lines:
@@ -288,7 +294,7 @@ class BZ98GuiApp:
                     else:
                         english_text = line
                         safe_key = f"names:{english_text.lower().replace(' ', '_')}"
-                    
+
                     if safe_key in existing_keys:
                         self.log(f"Skipping (Duplicate): {safe_key}")
                         self.progress['value'] += 1
@@ -308,8 +314,11 @@ class BZ98GuiApp:
                     existing_keys.add(safe_key)
                     added_count += 1
                     self.progress['value'] += 1
-            
-            self.log(f"BATCH COMPLETE! Added {added_count} new entries; {failed_count} failed.")
+
+            self.log(
+                f"BATCH COMPLETE! Added {added_count} new entries; "
+                f"{failed_count} failed."
+            )
             messagebox.showinfo(
                 "Success",
                 f"Added {added_count} entries. Failed translations: {failed_count}."
@@ -318,7 +327,7 @@ class BZ98GuiApp:
         except Exception as e:
             self.log(f"Critical Error: {e}")
             messagebox.showerror("Error", str(e))
-        
+
         self.btn_run.config(state='normal')
         self.progress['value'] = 0
 
@@ -332,47 +341,46 @@ class BZ98GuiApp:
         folder = self.scan_folder_path.get()
         self.log(f"Scanning folder: {folder}")
         self.odf_list.delete(0, tk.END)
-        self.discovered_odfs = [] # List of tuples (path, name, key)
-        
+        self.discovered_odfs = []  # List of tuples (path, display_name, key)
+
         odf_count = 0
         skipped_without_display_name = 0
         seen_keys = set()
 
         for root, _, files in os.walk(folder):
             for file in files:
-                if file.lower().endswith(".odf"):
-                    odf_count += 1
-                    path = os.path.join(root, file)
-                    unit_name = self.extract_unit_name(path)
+                if not file.lower().endswith(".odf"):
+                    continue
 
-                    if not unit_name:
-                        skipped_without_display_name += 1
-                        continue
+                odf_count += 1
+                path = os.path.join(root, file)
+                unit_name = self.extract_unit_name(path)
 
-                    key = f"names:{unit_name.lower().replace(' ', '_')}"
-                    if key in seen_keys:
-                        continue
+                if not unit_name:
+                    skipped_without_display_name += 1
+                    continue
 
-                    seen_keys.add(key)
-                    self.discovered_odfs.append((path, unit_name, key))
-                    self.odf_list.insert(tk.END, f"{unit_name} ({file})")
+                key = f"names:{unit_name.lower().replace(' ', '_')}"
+                if key in seen_keys:
+                    continue
+
+                seen_keys.add(key)
+                self.discovered_odfs.append((path, unit_name, key))
+                self.odf_list.insert(tk.END, f"{unit_name} ({file})")
 
         self.log(
-            f"Scan complete. Found {len(self.discovered_odfs)} player-visible unit names "
-            f"in {odf_count} ODF files; skipped {skipped_without_display_name} ODFs "
-            f"without unitName."
+            f"Scan complete. Found {len(self.discovered_odfs)} player-visible "
+            f"unit names in {odf_count} ODF files; skipped "
+            f"{skipped_without_display_name} ODFs without unitName."
         )
-        if self.discovered_odfs:
-            self.btn_bulk.config(state="normal")
-        else:
-            self.btn_bulk.config(state="disabled")
+        self.btn_bulk.config(
+            state="normal" if self.discovered_odfs else "disabled"
+        )
 
     def extract_unit_name(self, path):
-        """Return only the ODF's player-visible unitName value.
+        """Return only the player-visible unitName value from an ODF.
 
-        Filenames and other ODF identifiers are intentionally not used as
-        fallbacks because they are implementation names, not strings displayed
-        to the player.
+        Internal filenames and other ODF fields are intentionally ignored.
         """
         try:
             with open(path, 'r', errors='ignore') as f:
@@ -381,8 +389,25 @@ class BZ98GuiApp:
                     if not line or line.startswith(("//", ";", "#")):
                         continue
 
-                    match = re.match(
-                        r'^unitName\s*=\s*"([^"]+)"(?:\s*(?://.*)?)?
+                    # Drop a normal inline ODF comment before parsing the field.
+                    line = line.split("//", 1)[0].strip()
+                    if "=" not in line:
+                        continue
+
+                    field_name, raw_value = line.split("=", 1)
+                    if field_name.strip().lower() != "unitname":
+                        continue
+
+                    value = raw_value.strip().rstrip(";").strip()
+                    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+                        value = value[1:-1].strip()
+
+                    return value or None
+        except Exception as e:
+            self.log(f"Could not read ODF '{path}': {e}")
+
+        return None
+
     def start_bulk_thread(self):
         if not os.path.exists(self.csv_path.get()):
             messagebox.showerror("Error", "Target CSV file not found!")
@@ -393,10 +418,11 @@ class BZ98GuiApp:
         self.btn_bulk.config(state="disabled")
         self.progress['maximum'] = len(self.discovered_odfs)
         self.progress['value'] = 0
-        
+
         existing_keys = self.get_existing_keys()
         added_count = 0
-        
+        failed_count = 0
+
         try:
             with open(self.csv_path.get(), 'a', encoding='utf-8') as f:
                 for path, english_text, safe_key in self.discovered_odfs:
@@ -419,7 +445,7 @@ class BZ98GuiApp:
                     existing_keys.add(safe_key)
                     added_count += 1
                     self.progress['value'] += 1
-            
+
             self.log(
                 f"BULK SCAN COMPLETE! Added {added_count} new entries; "
                 f"{failed_count} failed."
@@ -432,67 +458,7 @@ class BZ98GuiApp:
         except Exception as e:
             self.log(f"Critical Error: {e}")
             messagebox.showerror("Error", str(e))
-            
-        self.btn_bulk.config(state="normal")
-        self.progress['value'] = 0
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = BZ98GuiApp(root)
-    root.mainloop(),
-                        line,
-                        re.IGNORECASE,
-                    )
-                    if match:
-                        unit_name = match.group(1).strip()
-                        return unit_name or None
-        except Exception as e:
-            self.log(f"Could not read ODF '{path}': {e}")
-        return None
-
-    def start_bulk_thread(self):
-        if not os.path.exists(self.csv_path.get()):
-            messagebox.showerror("Error", "Target CSV file not found!")
-            return
-        threading.Thread(target=self.process_bulk, daemon=True).start()
-
-    def process_bulk(self):
-        self.btn_bulk.config(state="disabled")
-        self.progress['maximum'] = len(self.discovered_odfs)
-        self.progress['value'] = 0
-        
-        existing_keys = self.get_existing_keys()
-        added_count = 0
-        
-        try:
-            with open(self.csv_path.get(), 'a', encoding='utf-8') as f:
-                for path, english_text, safe_key in self.discovered_odfs:
-                    if safe_key in existing_keys:
-                        self.log(f"Skipping (Duplicate): {safe_key}")
-                        self.progress['value'] += 1
-                        continue
-
-                    self.log(f"Translating: {english_text}...")
-                    row = [safe_key, english_text]
-                    for lang in self.languages:
-                        try:
-                            time.sleep(0.4)
-                            trans = GoogleTranslator(source='en', target=self.lang_codes[lang]).translate(english_text)
-                            row.append(trans)
-                        except:
-                            row.append(english_text)
-                    
-                    f.write("~".join(row) + "\n")
-                    existing_keys.add(safe_key)
-                    added_count += 1
-                    self.progress['value'] += 1
-            
-            self.log(f"BULK SCAN COMPLETE! Added {added_count} new entries.")
-            messagebox.showinfo("Success", f"Bulk translation complete. Added {added_count} units.")
-        except Exception as e:
-            self.log(f"Critical Error: {e}")
-            messagebox.showerror("Error", str(e))
-            
         self.btn_bulk.config(state="normal")
         self.progress['value'] = 0
 
