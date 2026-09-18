@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, filedialog
 from deep_translator import GoogleTranslator
+from deep_translator.exceptions import TooManyRequests
 import time
 import threading
 import os
@@ -60,6 +61,9 @@ class BZ98GuiApp:
         self.scan_folder_path = tk.StringVar()
         self.languages = ['French', 'German', 'Spanish', 'Italian', 'Russian', 'Portuguese']
         self.lang_codes = {'French': 'fr', 'German': 'de', 'Spanish': 'es', 'Italian': 'it', 'Russian': 'ru', 'Portuguese': 'pt'}
+        self._translator_cache = {}
+        self._last_translation_request = 0.0
+        self._translation_min_interval = 0.4
 
         self.load_custom_font()
         self.setup_styles()
@@ -210,57 +214,126 @@ class BZ98GuiApp:
         if d: self.scan_folder_path.set(d)
 
     def get_existing_keys(self):
+        """Read localization keys without decoding the translated columns.
+
+        Battlezone localization tables in the wild are not consistently UTF-8.
+        Keys are stored before the first '~', so reading only that byte slice
+        avoids failing on legacy ANSI/code-page bytes elsewhere in the row.
+        """
         keys = set()
         path = self.csv_path.get()
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        parts = line.split('~')
-                        if parts: keys.add(parts[0].strip())
-            except Exception as e:
-                self.log(f"Error reading existing keys: {e}")
+
+        if not os.path.exists(path):
+            return keys
+
+        try:
+            with open(path, 'rb') as f:
+                for raw_line in f:
+                    raw_key = raw_line.split(b'~', 1)[0].strip()
+                    if not raw_key:
+                        continue
+
+                    try:
+                        key = raw_key.decode('utf-8-sig')
+                    except UnicodeDecodeError:
+                        key = raw_key.decode('cp1252', errors='replace')
+
+                    key = key.strip()
+                    if key:
+                        keys.add(key)
+        except Exception as e:
+            self.log(f"Error reading existing keys: {e}")
+
         return keys
 
-    def translate_text(self, english_text, retries=2):
-        """Translate one display string into every configured target language.
+    def _get_translator(self, target):
+        cache = getattr(self, '_translator_cache', None)
+        if cache is None:
+            cache = {}
+            self._translator_cache = cache
 
-        A failed translator request must not silently become an English value in
-        a foreign-language column. After retries are exhausted, the caller
-        skips the row and records the failure in the activity log.
-        """
+        translator = cache.get(target)
+        if translator is None:
+            translator = GoogleTranslator(source='en', target=target)
+            cache[target] = translator
+        return translator
+
+    def _wait_for_translation_slot(self):
+        min_interval = getattr(self, '_translation_min_interval', 0.4)
+        last_request = getattr(self, '_last_translation_request', 0.0)
+        now = time.monotonic()
+        remaining = min_interval - (now - last_request)
+
+        if remaining > 0:
+            time.sleep(remaining)
+
+        self._last_translation_request = time.monotonic()
+
+    @staticmethod
+    def _is_rate_limit_error(error):
+        if isinstance(error, TooManyRequests):
+            return True
+
+        message = str(error).lower()
+        return "too many requests" in message or "429" in message
+
+    def _translate_one(self, english_text, lang, retries=4):
+        target = self.lang_codes[lang]
+        translator = self._get_translator(target)
+        last_error = None
+
+        # A 429 usually means Google's anonymous endpoint has temporarily
+        # throttled this IP. Sub-second retries only make that worse.
+        rate_limit_cooldowns = [15, 30, 60]
+        transient_cooldowns = [1, 2, 4]
+
+        for attempt in range(1, retries + 1):
+            try:
+                self._wait_for_translation_slot()
+                translated = translator.translate(english_text)
+
+                if translated is None or not str(translated).strip():
+                    raise RuntimeError("translator returned an empty result")
+
+                return str(translated).strip()
+            except Exception as e:
+                last_error = e
+                self.log(
+                    f"Translation error ({lang}, attempt {attempt}/{retries}) "
+                    f"for '{english_text}': {e}"
+                )
+
+                if attempt >= retries:
+                    break
+
+                if self._is_rate_limit_error(e):
+                    cooldown = rate_limit_cooldowns[
+                        min(attempt - 1, len(rate_limit_cooldowns) - 1)
+                    ]
+                    self.log(
+                        f"Google rate limit detected. Cooling down for "
+                        f"{cooldown} seconds before retrying..."
+                    )
+                else:
+                    cooldown = transient_cooldowns[
+                        min(attempt - 1, len(transient_cooldowns) - 1)
+                    ]
+
+                time.sleep(cooldown)
+
+        raise RuntimeError(
+            f"{lang} translation failed for '{english_text}' after "
+            f"{retries} attempts: {last_error}"
+        )
+
+    def translate_text(self, english_text, retries=4):
+        """Translate one display string into every configured target language."""
         translations = []
 
         for lang in self.languages:
-            target = self.lang_codes[lang]
-            last_error = None
-
-            for attempt in range(1, retries + 1):
-                try:
-                    time.sleep(0.4)
-                    translated = GoogleTranslator(
-                        source='en',
-                        target=target,
-                    ).translate(english_text)
-
-                    if translated is None or not str(translated).strip():
-                        raise RuntimeError("translator returned an empty result")
-
-                    translations.append(str(translated).strip())
-                    break
-                except Exception as e:
-                    last_error = e
-                    self.log(
-                        f"Translation error ({lang}, attempt {attempt}/{retries}) "
-                        f"for '{english_text}': {e}"
-                    )
-                    if attempt < retries:
-                        time.sleep(0.8)
-            else:
-                raise RuntimeError(
-                    f"{lang} translation failed for '{english_text}' after "
-                    f"{retries} attempts: {last_error}"
-                )
+            translations.append(
+                self._translate_one(english_text, lang, retries=retries)
+            )
 
         return translations
 
